@@ -131,6 +131,34 @@ export default function Home() {
 
   const isBusy = action.pdf === "loading" || action.upload === "loading";
 
+  // عند العودة من صفحة الاستعلام (/inquiries/slenquiry) مع بيانات محملة،
+  // اقرأها من sessionStorage وعبّئ النموذج بها تلقائياً.
+  // When returning from the inquiry page with loaded data, read it from
+  // sessionStorage and auto-fill the form.
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("slenquiry:prefill");
+      if (!raw) return;
+      sessionStorage.removeItem("slenquiry:prefill");
+      const parsed = JSON.parse(raw);
+      setFormData((prev) => ({
+        ...prev,
+        ...parsed,
+        // حوّل التواريخ من DD-MM-YYYY إلى قيمة input type="date" (YYYY-MM-DD)
+        admission_date_gregorian: toDateInputValue(parsed.admission_date_gregorian) || prev.admission_date_gregorian,
+        discharge_date_gregorian: toDateInputValue(parsed.discharge_date_gregorian) || prev.discharge_date_gregorian,
+        time: toTimeInputValue(parsed.time) || prev.time,
+      }));
+      setActiveTab("new");
+      toast({
+        title: "تم تحميل البيانات من الاستعلام",
+        description: "عبّئ النموذج بالبيانات السابقة، عدّل ما يلزم ثم اطبع أو ارفع.",
+      });
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   // --- Field update ---
   const updateField = (key: keyof LeaveFormData, value: string) => {
     setFormData((prev) => ({ ...prev, [key]: value }));
@@ -487,13 +515,24 @@ export default function Home() {
               </p>
             </div>
           </div>
-          <div className="hidden sm:flex items-center gap-2 text-xs text-white/70">
-            <Badge className="bg-white/20 text-white border-white/30 hover:bg-white/30">
-              Vercel-only
-            </Badge>
-            <Badge className="bg-white/20 text-white border-white/30 hover:bg-white/30">
-              Vercel Postgres
-            </Badge>
+          <div className="flex items-center gap-2">
+            <a
+              href="/inquiries/slenquiry"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-white/15 border border-white/30 px-3 py-1.5 text-xs sm:text-sm font-medium text-white hover:bg-white/25 transition-colors"
+              title="صفحة الاستعلام عن الإجازة المرضية"
+            >
+              <Search className="h-4 w-4" />
+              <span className="hidden sm:inline">صفحة الاستعلام</span>
+              <span className="sm:hidden">استعلام</span>
+            </a>
+            <div className="hidden md:flex items-center gap-2 text-xs text-white/70">
+              <Badge className="bg-white/20 text-white border-white/30 hover:bg-white/30">
+                Vercel-only
+              </Badge>
+              <Badge className="bg-white/20 text-white border-white/30 hover:bg-white/30">
+                Vercel Postgres
+              </Badge>
+            </div>
           </div>
         </div>
       </header>

@@ -112,16 +112,54 @@ export async function POST(req: NextRequest) {
       await sql.query(SCHEMA_SQL);
     } catch (dbErr: any) {
       const msg = String(dbErr?.message || dbErr || "");
-      if (msg.includes("missing_connection_string") || msg.includes("connect")) {
-        return NextResponse.json(
-          {
-            success: false,
-            message:
-              "قاعدة بيانات Vercel Postgres غير مربوطة. اربط قاعدة بيانات من Vercel Dashboard → Storage ثم نفّذ schema.sql مرة واحدة لإنشاء الجداول.",
+      // عند عدم وجود قاعدة بيانات مربوطة، ارجع تلقائياً إلى وضع العرض (Blob)
+      // بدلاً من إرجاع 503 — هذا يضمن أن لوحة الإدخال تعمل دائماً وتخزن
+      // البيانات في Vercel Blob، فيمكن لصفحة الاستعلام قراءتها لاحقاً.
+      // When no database is connected, fall back to demo mode (Blob storage)
+      // instead of returning 503 — this ensures the entry page always works
+      // and stores data in Vercel Blob so the inquiry page can read it later.
+      if (msg.includes("missing_connection_string") || msg.includes("connect") || msg.includes("connection")) {
+        try {
+          const saved = await demoUpsertLeave({
+            gsl_code: leaveNumber,
+            identity_number: filled.id_number,
+            name_ar: filled.patient_name_ar,
+            name_en: emptyToNull(filled.patient_name_en) ?? filled.patient_name_ar,
+            date_from: entryDate || new Date().toISOString().slice(0, 10),
+            date_to: exitDate || new Date().toISOString().slice(0, 10),
+            day_count: dayCount,
+            issue_date: issueDate,
+            time_from: timeDisplay,
+            nationality_ar: natAr,
+            nationality_en: natEn,
+            employer: emptyToNull(filled.employer_ar),
+            employer_en: emptyToNull(filled.employer_en),
+            doctor_name_ar: docAr,
+            doctor_name_en: docEn,
+            doctor_specialty_ar: specAr,
+            doctor_specialty_en: specEn,
+            hospital_name_ar: hospAr,
+            hospital_name_en: hospEn,
+            license_number: licenseNumber,
+            leave_type: "sick",
+          });
+          return NextResponse.json({
+            success: true,
+            message: "[وضع احتياطي] تم حفظ الإجازة في Vercel Blob storage (قاعدة البيانات غير مربوطة).",
             leave_id: leaveNumber,
-          },
-          { status: 503 },
-        );
+            day_count: dayCount,
+            record_id: saved.id,
+          });
+        } catch (demoErr: any) {
+          console.error("[upload-leave] fallback demo mode error:", demoErr);
+          return NextResponse.json(
+            {
+              success: false,
+              message: `فشل الحفظ في الوضع الاحتياطي: ${demoErr?.message || "خطأ غير متوقع"}`,
+            },
+            { status: 500 },
+          );
+        }
       }
       throw dbErr;
     }

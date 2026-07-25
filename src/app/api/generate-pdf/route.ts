@@ -148,15 +148,36 @@ export async function POST(req: NextRequest) {
       const fontToUse = options.weight === "bold" ? fontArBold : fontArReg;
       if (options.fontSize) doc.fontSize(options.fontSize);
       if (options.color) doc.fillColor(options.color);
-      // ملاحظة مهمة: لا تستخدم `features: ["rtla"]` — فهي تعكس الأرقام وتكسر
-      // الأقواس في النصوص المختلطة (عربي + لاتيني). التشكيل العربي يحدث
-      // افتراضياً عبر GSUB بدون الحاجة لهذه الميزة. خوارزمية BiDi في fontkit
-      // ستتعامل مع الترتيب البصري.
-      // IMPORTANT: do NOT use `features: ["rtla"]` — it reverses digits and
-      // breaks brackets in mixed Arabic/Latin text. Arabic letter shaping
-      // happens via default GSUB without this feature, and fontkit's BiDi
-      // handles the visual ordering.
+
+      // اكتشف إن كان النص عربياً نقياً (لا يحوي أرقاماً لاتينية أو أحرفاً
+      // لاتينية). في هذه الحالة يجب تفعيل `features: ["rtla"]` لضمان إعادة
+      // ترتيب BiDi الصحيح: pdfkit/fontkit بدون هذه الميزة يعرض الكلمات
+      // العربية بترتيب منطقي LTR، فيرى القارئ العربي الكلمة الثانية أولاً
+      // (مثلاً "إجازة رمز" بدلاً من "رمز الإجازة").
+      //
+      // Detect pure-Arabic text (no Latin digits or letters). In that case
+      // enable `features: ["rtla"]` to ensure proper BiDi reordering: without
+      // this feature, pdfkit/fontkit renders Arabic words in logical LTR
+      // order, so an Arabic RTL reader sees the second word first (e.g.
+      // "إجازة رمز" instead of "رمز الإجازة").
+      //
+      // للنصوص المختلطة (عربي + أرقام لاتينية أو أحرف لاتينية)، لا تستخدم
+      // `rtla` لأنها تعكس الأرقام وتكسر الأقواس — استخدم المقاربة بالمقاطع
+      // عبر renderVisualPieces بدلاً من ذلك.
+      // For mixed text (Arabic + Latin digits or letters), do NOT use `rtla`
+      // because it reverses digits and breaks brackets — use the piece-by-piece
+      // approach via renderVisualPieces instead.
+      const stripped = String(text).replace(/[\u200e\u200f\u200d\u200c]/g, "");
+      // عربي نقي = حروف عربية، مسافات، علامات ترقيم عربية، نقطتين، شرطة، أقواس عربية فقط
+      // Pure Arabic = only Arabic letters, spaces, Arabic punctuation, colon, dash, Arabic parens
+      const isPureArabic = /^[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\s\u060C\u061B\u061F\uFD3E\uFD3F:\-()/\\]*$/.test(stripped)
+        && /[\u0600-\u06FF]/.test(stripped)
+        && !/[0-9A-Za-z]/.test(stripped);
+
       const opts: any = { align: "right", ...options };
+      if (useArabicFont && isPureArabic && !opts.features) {
+        opts.features = ["rtla"];
+      }
       doc.font(fontToUse).text(text, x, y, opts);
     };
 

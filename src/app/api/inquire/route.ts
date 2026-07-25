@@ -23,7 +23,8 @@ export async function GET(req: NextRequest) {
     const q = searchParams.get("q")?.trim();
     const limit = Math.min(parseInt(searchParams.get("limit") || "50", 10), 100);
 
-    // وضع العرض: ابحث في الذاكرة
+    // وضع العرض: ابحث في الذاكرة / Vercel Blob
+    // Demo mode: search in-memory / Vercel Blob storage
     if (isDemoMode()) {
       const demoRows = await demoSearchLeave({ gsl, id, q, limit });
       const formatted = demoRows.map((r) => ({
@@ -94,17 +95,53 @@ export async function GET(req: NextRequest) {
       }
     } catch (dbErr: any) {
       const msg = String(dbErr?.message || dbErr || "");
-      if (msg.includes("missing_connection_string") || msg.includes("connect")) {
-        return NextResponse.json(
-          {
-            success: false,
-            message:
-              "قاعدة بيانات Vercel Postgres غير مربوطة بعد. اربط قاعدة بيانات من Vercel Dashboard → Storage وأنشئ الجداول بتنفيذ schema.sql.",
-            records: [],
-            count: 0,
-          },
-          { status: 503 },
-        );
+      // عند عدم وجود قاعدة بيانات مربوطة، ارجع تلقائياً إلى وضع العرض (Blob)
+      // بدلاً من إرجاع 503 — هذا يضمن عمل صفحة الاستعلام فوراً على Vercel
+      // بدون الحاجة لإعداد قاعدة بيانات.
+      // When no database is connected, fall back to demo mode (Blob storage)
+      // instead of returning 503 — this ensures the inquiry page works
+      // immediately on Vercel without requiring database setup.
+      if (msg.includes("missing_connection_string") || msg.includes("connect") || msg.includes("connection")) {
+        try {
+          const demoRows = await demoSearchLeave({ gsl, id, q, limit });
+          const formatted = demoRows.map((r) => ({
+            id: r.id,
+            gslCode: r.gsl_code,
+            identityNumber: r.identity_number,
+            nameAr: r.name_ar,
+            nameEn: r.name_en,
+            dateFrom: r.date_from,
+            dateTo: r.date_to,
+            dayCount: r.day_count,
+            issueDate: r.issue_date,
+            timeFrom: r.time_from,
+            nationalityAr: r.nationality_ar,
+            nationalityEn: r.nationality_en,
+            employer: r.employer,
+            employerEn: r.employer_en,
+            doctorNameAr: r.doctor_name_ar,
+            doctorNameEn: r.doctor_name_en,
+            doctorSpecialtyAr: r.doctor_specialty_ar,
+            doctorSpecialtyEn: r.doctor_specialty_en,
+            hospitalNameAr: r.hospital_name_ar,
+            hospitalNameEn: r.hospital_name_en,
+            licenseNumber: r.license_number,
+            leaveType: r.leave_type,
+            createdAt: r.created_at,
+          }));
+          return NextResponse.json({ success: true, count: formatted.length, records: formatted });
+        } catch (demoErr: any) {
+          return NextResponse.json(
+            {
+              success: false,
+              message:
+                "تعذّر الوصول إلى قاعدة البيانات أو تخزين Blob. تأكد من ضبط DEMO_MODE=true أو ربط Vercel Postgres.",
+              records: [],
+              count: 0,
+            },
+            { status: 503 },
+          );
+        }
       }
       throw dbErr;
     }
