@@ -52,7 +52,11 @@ interface DemoRecord {
 }
 
 // Path to the DEMO JSON file (only used when DEMO_MODE=true)
-const DEMO_FILE = path.join(process.cwd(), ".demo-store.json");
+// On Vercel, the filesystem is read-only except for /tmp, so we store
+// the demo data there. In local dev, we use the project root.
+const DEMO_FILE = process.env.VERCEL
+  ? "/tmp/.demo-store.json"
+  : path.join(process.cwd(), ".demo-store.json");
 
 function readDemoStore(): DemoRecord[] {
   try {

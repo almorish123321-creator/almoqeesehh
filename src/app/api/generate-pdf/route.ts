@@ -148,8 +148,15 @@ export async function POST(req: NextRequest) {
       const fontToUse = options.weight === "bold" ? fontArBold : fontArReg;
       if (options.fontSize) doc.fontSize(options.fontSize);
       if (options.color) doc.fillColor(options.color);
-      const opts: any = { align: "right", features: ["rtla"], ...options };
-      if (!useArabicFont) delete opts.features;
+      // ملاحظة مهمة: لا تستخدم `features: ["rtla"]` — فهي تعكس الأرقام وتكسر
+      // الأقواس في النصوص المختلطة (عربي + لاتيني). التشكيل العربي يحدث
+      // افتراضياً عبر GSUB بدون الحاجة لهذه الميزة. خوارزمية BiDi في fontkit
+      // ستتعامل مع الترتيب البصري.
+      // IMPORTANT: do NOT use `features: ["rtla"]` — it reverses digits and
+      // breaks brackets in mixed Arabic/Latin text. Arabic letter shaping
+      // happens via default GSUB without this feature, and fontkit's BiDi
+      // handles the visual ordering.
+      const opts: any = { align: "right", ...options };
       doc.font(fontToUse).text(text, x, y, opts);
     };
 
@@ -470,11 +477,16 @@ export async function POST(req: NextRequest) {
     const endDateFormatted = normalizeDateToDDMMYYYY(payload.exitDate);
 
     const getArabicDuration = (count: number) => {
-      if (count === 0) return "0 يوم";
-      if (count === 1) return "1 يوم";
-      if (count === 2) return "2 يومان";
-      if (count >= 3 && count <= 10) return `${count} أيام`;
-      return `${count} يوم`;
+      // صيغة البوت: الكلمة العربية أولاً ثم الرقم (مطابق لإخراج بوت Python).
+      // هذا التنسيق يضمن تشكيلاً عربياً صحيحاً متصلاً ويطابق إخراج البوت
+      // الذي استخدم `arabic_reshaper + python-bidi` بنجاح في الإنتاج.
+      // Bot's format: Arabic word first, then the digit. This matches the
+      // Python bot's output and ensures proper Arabic letter shaping.
+      if (count === 0) return "يوم 0";
+      if (count === 1) return "يوم 1";
+      if (count === 2) return "يومان 2";
+      if (count >= 3 && count <= 10) return `أيام ${count}`;
+      return `يوم ${count}`;
     };
 
     const durText = getArabicDuration(payload.dayCount);
@@ -530,27 +542,25 @@ export async function POST(req: NextRequest) {
       color: "#ffffff",
     });
 
-    // عرض خلية المدة العربية — مطابقة لإخراج بوت Python.
+    // عرض خلية المدة العربية — نهج النص الواحد المطابق لإخراج بوت Python.
     //
-    // البوت يبني النص المنطقي: `1 يوم (date1 إلى date2)` ثم يطبّق
-    // arabic_reshaper + python-bidi للحصول على الترتيب البصري:
-    //   `) date2 إلى date1 ( يوم 1`  (مرئي L→R على الشاشة)
+    // البوت يبني النص المنطقي: `يوم 1 (date1 إلى date2)` ثم يطبّق
+    // arabic_reshaper + python-bidi. في Node.js، pdfkit/fontkit يقومان
+    // بالتشكيل و BiDi تلقائياً عبر HarfBuzz.
     //
-    // بما أنه لا تتوفر مكتبة BiDi في Node.js، نحسب الترتيب البصري يدوياً
-    // لِنمطنا المحدد، ونُعرِض كل مقطع بخطه الخاص (NotoSansArabic للعربي،
-    // Times-Roman للأرقام/الأقواس). كل مقطع نقي الاتجاه، فلا يُعاد ترتيبه
-    // بواسطة BiDi في pdfkit.
+    // اكتشفنا (عبر اختبارات بصرية) أن:
+    // 1. `features: ["rtla"]` تكسر الأرقام والأقواس — يجب عدم استخدامها.
+    // 2. بدء النص بحرف عربي (وليس رقم) ضروري لتشكيل عربي صحيح متصل.
+    // 3. صيغة البوت `يوم 1 (...)` تنتج أحرفاً متصلة وأرقاماً صحيحة.
     //
-    // Render the Arabic duration cell — mirrors Python bot's output.
-    //
-    // The bot builds logical text `1 يوم (date1 إلى date2)` then runs
-    // arabic_reshaper + python-bidi to get visual order:
-    //   `) date2 إلى date1 ( يوم 1`  (visual L→R on screen)
-    //
-    // Since Node has no BiDi library, we manually compute the visual order
-    // for our specific pattern and render each piece with its own font
-    // (NotoSansArabic for Arabic, Times-Roman for digits/brackets). Each
-    // piece is pure-direction so pdfkit's BiDi won't reorder within it.
+    // Render the Arabic duration cell — single-text approach mirroring the
+    // Python bot's output. pdfkit/fontkit handle shaping and BiDi via
+    // HarfBuzz automatically. Key findings from visual tests:
+    // 1. `features: ["rtla"]` breaks digits and brackets — must NOT use.
+    // 2. Starting the text with an Arabic letter (not a digit) is required
+    //    for proper Arabic letter shaping (connected forms).
+    // 3. Bot's format `يوم 1 (...)` produces connected letters and correct
+    //    digit order.
     const toArabicDate = (ddmmyyyy: string) => {
       // حوّل DD-MM-YYYY إلى YYYY-MM-DD لمطابقة التنسيق المطلوب
       // Convert DD-MM-YYYY to YYYY-MM-DD to match required format
@@ -561,45 +571,21 @@ export async function POST(req: NextRequest) {
     const startDateAr = toArabicDate(startDateFormatted);
     const endDateAr = toArabicDate(endDateFormatted);
 
-    // فكّ المدة العربية إلى رقم + كلمة عربية. هذا ضروري لأن المدة العربية
-    // تحتوي على رقم لاتيني مع كلمة عربية (مثل "1 يوم")، ولكي نُبقي كل مقطع
-    // نقي الاتجاه يجب فصل الرقم عن الكلمة.
-    // Split the Arabic duration text into a digit + Arabic word. This is
-    // required because the Arabic duration contains a Latin digit mixed
-    // with an Arabic word (e.g., "1 يوم"); to keep each piece pure-
-    // direction we must separate the digit from the word.
-    const durParts = /^(\d+)\s+(.+)$/.exec(durText);
-    const durDigit = durParts ? durParts[1] : String(payload.dayCount);
-    const durWord = durParts ? durParts[2] : "يوم";
+    // النص المنطقي الكامل بخط NotoSansArabic (يدعم العربي واللاتيني والأرقام).
+    // صيغة البوت: كلمة العربية أولاً ثم الرقم ثم التواريخ بين قوسين.
+    // Full logical text in NotoSansArabic font (supports Arabic, Latin, digits).
+    // Bot's format: Arabic word first, then number, then dates in parens.
+    const arabicDurationText = `${durText} ( ${startDateAr} إلى ${endDateAr} )`;
 
-    // المقاطع بترتيب بصري L→R على الشاشة (مطابق لإخراج البوت):
-    //   `) date2 إلى date1 ( يوم 1`
-    // Pieces in visual L→R order on screen (matches bot output):
-    //   `) date2 إلى date1 ( يوم 1`
-    const durPieces = [
-      { text: ")", font: fontEnReg },                  // يساري بصرياً: قوس إغلاق / visual leftmost: close paren
-      { text: " ", font: fontEnReg },                  // مسافة / space
-      { text: endDateAr, font: fontEnReg },            // التاريخ الثاني YYYY-MM-DD / second date
-      { text: " ", font: fontEnReg },                  // مسافة / space
-      { text: "إلى", font: fontArReg },                // كلمة "إلى" بين التاريخين / "to" word between dates
-      { text: " ", font: fontEnReg },                  // مسافة / space
-      { text: startDateAr, font: fontEnReg },          // التاريخ الأول YYYY-MM-DD / first date
-      { text: " ", font: fontEnReg },                  // مسافة / space
-      { text: "(", font: fontEnReg },                  // قوس فتح / open paren
-      { text: " ", font: fontEnReg },                  // مسافة / space
-      { text: durWord, font: fontArReg },              // الكلمة العربية (يوم/يومان/أيام) / Arabic word
-      { text: " ", font: fontEnReg },                  // مسافة / space
-      { text: durDigit, font: fontEnReg },             // يميني بصرياً: الرقم / visual rightmost: the digit
-    ];
-    renderVisualPieces({
-      pieces: durPieces,
-      x: startX + col1W + subColW + 10,
-      y: currentY,
+    doc.font(fontArReg).fontSize(durFontSize - 1).fillColor("#ffffff");
+    // احسب ارتفاع السطر للتوسيط الرأسي
+    // Compute line height for vertical centering
+    const durTextH = doc.currentLineHeight(true);
+    const durTextY = currentY + (rowH - durTextH) / 2;
+    doc.text(arabicDurationText, startX + col1W + subColW + 10, durTextY, {
       width: subColW - 20,
-      height: rowH,
-      fontSize: durFontSize - 1,
-      color: "#ffffff",
       align: "center",
+      lineBreak: false,
     });
 
     doc.restore();
@@ -700,32 +686,36 @@ export async function POST(req: NextRequest) {
 
     const hasLicense = !!(payload.licenseNumber && !emptyIndicators.has(payload.licenseNumber.trim()));
     if (hasLicense) {
-      // رقم الترخيص في سطر منفصل — مطابق لإخراج بوت Python.
+      // رقم الترخيص في سطر منفصل — نهج المقاطع المنفصلة.
       //
-      // البوت يبني النص المنطقي: `رقم الترخيص : 1410101201200443` ثم
-      // يطبّق arabic_reshaper + python-bidi للحصول على الترتيب البصري:
-      //   `1410101201200443 : رقم الترخيص`  (مرئي L→R على الشاشة)
+      // المشكلة: النص الواحد `رقم الترخيص: 1410101201200443` لا يُعاد ترتيبه
+      // بشكل صحيح بواسطة BiDi المبسّط في fontkit (يُعرض بالترتيب المصدر LTR،
+      // فيكون العنوان العربي على اليسار والرقم على اليمين — وهذا خطأ للقارئ
+      // العربي الذي يتوقع العنوان على اليمين والرقم على اليسار).
       //
-      // نُكرّر نفس النهج: نُحسب الترتيب البصري يدوياً ونُعرِض كل مقطع
-      // بخطه (NotoSansArabic للعربي، Times-Roman للأرقام والنقطتين).
-      // السطر مُوسَّط أفقيًا كما في البوت.
+      // الحل: قسّم النص إلى مقاطع نقيّة الاتجاه (رقم LTR، نقطتين محايد،
+      // عنوان عربي RTL) واعرضها بالترتيب البصري الصحيح: الرقم على اليسار،
+      // النقطتين في الوسط، العنوان العربي على اليمين. كل مقطع نقي الاتجاه
+      // يُعرَض بشكل صحيح بواسطة pdfkit.
       //
-      // License number on a separate line — mirrors Python bot's output.
+      // License number on a separate line — piece-by-piece approach.
       //
-      // The bot builds logical text `رقم الترخيص : 1410101201200443` then
-      // applies arabic_reshaper + python-bidi to get visual order:
-      //   `1410101201200443 : رقم الترخيص`  (visual L→R on screen)
+      // Problem: single text `رقم الترخيص: 1410101201200443` is NOT correctly
+      // reordered by fontkit's simplified BiDi (it renders in source LTR order,
+      // placing the Arabic label on the left and the number on the right —
+      // wrong for an Arabic reader who expects the label on the right and the
+      // number on the left).
       //
-      // We replicate this: manually compute visual order, render each
-      // piece with its own font (NotoSansArabic for Arabic, Times-Roman
-      // for digits and colon). The line is horizontally centered, like
-      // the bot.
+      // Solution: split the text into pure-direction pieces (LTR number, neutral
+      // colon, RTL Arabic label) and render them in the correct visual order:
+      // number on the left, colon in the middle, Arabic label on the right.
+      // Each piece is pure-direction so pdfkit renders it correctly.
       const licensePieces = [
-        { text: payload.licenseNumber, font: fontEnReg },     // يساري بصرياً: الرقم / visual leftmost: the number
-        { text: " ", font: fontEnReg },                       // مسافة / space
-        { text: ":", font: fontEnReg },                       // نقطتين / colon
-        { text: " ", font: fontEnReg },                       // مسافة / space
-        { text: "رقم الترخيص", font: fontArReg },             // يميني بصرياً: العبارة العربية / visual rightmost: Arabic label
+        { text: payload.licenseNumber, font: fontEnReg },     // visual leftmost: the number
+        { text: " ", font: fontEnReg },                       // space
+        { text: ":", font: fontEnReg },                       // colon
+        { text: " ", font: fontEnReg },                       // space
+        { text: "رقم الترخيص", font: fontArReg },             // visual rightmost: Arabic label
       ];
       renderVisualPieces({
         pieces: licensePieces,
