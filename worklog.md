@@ -1145,3 +1145,31 @@ All three user-reported issues are confirmed fixed in this PDF render:
    text.
 
 **No remaining problems identified.** The PDF is ready.
+
+---
+Task ID: PDF-VERCEL-FINAL
+Agent: general-purpose (vision analysis)
+Task: Final verification of Vercel production PDF after all fixes
+
+## Verification Results — /tmp/vercel-final-1.png (Vercel production PDF)
+
+### 1. Row 2 (Leave Duration, dark blue) — Arabic cell (right side)
+- (a) Single line, no wrapping: **PASS** — text contained on one line
+- (b) Dates in YYYY-MM-DD: **PASS** — literal transcription: `2026-06-09 إلى 2026-06-09 ( 1 يوم )` (year-first)
+- (c) Arabic letters connected: **PASS** — standard joined cursive script
+
+### 2. Footer license line
+- (a) Number `1410101201200443` LEFT, Arabic `رقم الترخيص` RIGHT: **PASS**
+- (b) Same vertical baseline (number not floating higher): **PASS** — horizontally aligned
+
+### 3. Footer hospital name
+- (a) Arabic on top (connected letters): **PASS** — `المستشفى التخصصي` above, joined cursive
+- (b) English below Arabic: **PASS** — `King Faisal Specialist Hospital` directly under Arabic
+
+## Final Verdict: ALL PASS ✅
+
+Note: Initial VLM run flagged item 1(b) as FAIL but self-contradicted by giving
+example `2026-06-09` (which is YYYY-MM-DD). Targeted follow-up confirmed the
+dates are correctly year-first. All three verification areas pass.
+
+No further code changes required.
