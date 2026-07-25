@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
 
     // اضمن وجود الجداول (آمن للاستدعاء المتكرر) — أو احفظ في الذاكرة في وضع DEMO
     if (isDemoMode()) {
-      const saved = demoUpsertLeave({
+      const saved = await demoUpsertLeave({
         gsl_code: leaveNumber,
         identity_number: filled.id_number,
         name_ar: filled.patient_name_ar,

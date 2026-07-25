@@ -13,10 +13,12 @@
  */
 
 import { sql as vercelSql } from "@vercel/postgres";
+import { put, list } from "@vercel/blob";
 import fs from "fs";
 import path from "path";
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
+const IS_VERCEL = !!process.env.VERCEL;
 
 export const sql: any = vercelSql;
 
@@ -51,14 +53,24 @@ interface DemoRecord {
   created_at: string;
 }
 
-// Path to the DEMO JSON file (only used when DEMO_MODE=true)
-// On Vercel, the filesystem is read-only except for /tmp, so we store
-// the demo data there. In local dev, we use the project root.
-const DEMO_FILE = process.env.VERCEL
-  ? "/tmp/.demo-store.json"
+// Path to the DEMO JSON file (only used when DEMO_MODE=true AND not on Vercel)
+// On Vercel, the filesystem is read-only except for /tmp, AND /tmp is per-instance,
+// so we use Vercel Blob storage instead to share state across serverless instances.
+const DEMO_FILE = IS_VERCEL
+  ? "/tmp/.demo-store.json"  // fallback only — Blob is preferred on Vercel
   : path.join(process.cwd(), ".demo-store.json");
 
+// In Vercel Blob, we store each record as a separate JSON file under the
+// "sick-leaves/" prefix. The pathname is `sick-leaves/{id}.json`. This lets
+// us list all records and read them individually.
+const BLOB_PREFIX = "sick-leaves/";
+
 function readDemoStore(): DemoRecord[] {
+  if (IS_VERCEL) {
+    // Synchronous wrapper is not possible for async Blob calls — caller must
+    // use readDemoStoreAsync instead.
+    return [];
+  }
   try {
     if (fs.existsSync(DEMO_FILE)) {
       const raw = fs.readFileSync(DEMO_FILE, "utf-8");
@@ -72,10 +84,70 @@ function readDemoStore(): DemoRecord[] {
 }
 
 function writeDemoStore(records: DemoRecord[]): void {
+  if (IS_VERCEL) {
+    // No-op for sync function on Vercel; use writeDemoStoreAsync instead.
+    return;
+  }
   try {
     fs.writeFileSync(DEMO_FILE, JSON.stringify(records, null, 2), "utf-8");
   } catch {
     /* ignore */
+  }
+}
+
+// =================================================================
+//  Async Blob-backed DEMO store (used on Vercel)
+// =================================================================
+
+/**
+ * Read all DEMO records from Vercel Blob storage.
+ * Each record is stored as `sick-leaves/{id}.json`.
+ */
+async function readDemoStoreAsync(): Promise<DemoRecord[]> {
+  if (!IS_VERCEL) {
+    return readDemoStore();
+  }
+  try {
+    const { blobs } = await list({ prefix: BLOB_PREFIX, limit: 1000 });
+    const records: DemoRecord[] = [];
+    for (const blob of blobs) {
+      try {
+        const res = await fetch(blob.url);
+        if (res.ok) {
+          const text = await res.text();
+          records.push(JSON.parse(text) as DemoRecord);
+        }
+      } catch {
+        /* skip malformed blob */
+      }
+    }
+    return records;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Write a single DEMO record to Vercel Blob storage.
+ */
+async function writeDemoRecordAsync(record: DemoRecord): Promise<void> {
+  if (!IS_VERCEL) {
+    const store = readDemoStore();
+    const idx = store.findIndex((r) => r.id === record.id);
+    if (idx >= 0) store[idx] = record;
+    else store.push(record);
+    writeDemoStore(store);
+    return;
+  }
+  try {
+    const pathname = `${BLOB_PREFIX}${record.id}.json`;
+    await put(pathname, JSON.stringify(record, null, 2), {
+      access: "public",
+      contentType: "application/json",
+      addRandomSuffix: false,
+    });
+  } catch (e) {
+    console.error("[demo] writeDemoRecordAsync error:", e);
   }
 }
 
@@ -84,18 +156,20 @@ export function isDemoMode(): boolean {
 }
 
 /**
- * DEMO only: insert or update a sick leave record (persisted to a JSON file).
+ * DEMO only: insert or update a sick leave record.
+ * On Vercel: persisted to Vercel Blob storage (shared across instances).
+ * Locally: persisted to a JSON file.
  * Returns the saved record (with id).
  */
-export function demoUpsertLeave(input: Omit<DemoRecord, "id" | "created_at">): DemoRecord {
-  const store = readDemoStore();
+export async function demoUpsertLeave(input: Omit<DemoRecord, "id" | "created_at">): Promise<DemoRecord> {
+  const store = await readDemoStoreAsync();
   const existingIdx = store.findIndex(
     (r) => r.gsl_code === input.gsl_code && r.identity_number === input.identity_number,
   );
   if (existingIdx >= 0) {
-    store[existingIdx] = { ...store[existingIdx], ...input };
-    writeDemoStore(store);
-    return store[existingIdx];
+    const updated = { ...store[existingIdx], ...input };
+    await writeDemoRecordAsync(updated);
+    return updated;
   }
   const nextId = store.reduce((max, r) => Math.max(max, r.id), 0) + 1;
   const record: DemoRecord = {
@@ -103,22 +177,23 @@ export function demoUpsertLeave(input: Omit<DemoRecord, "id" | "created_at">): D
     id: nextId,
     created_at: new Date().toISOString(),
   };
-  store.push(record);
-  writeDemoStore(store);
+  await writeDemoRecordAsync(record);
   return record;
 }
 
 /**
- * DEMO only: search sick leave records (read from JSON file).
+ * DEMO only: search sick leave records.
+ * On Vercel: reads from Vercel Blob storage (shared across instances).
+ * Locally: reads from JSON file.
  */
-export function demoSearchLeave(opts: {
+export async function demoSearchLeave(opts: {
   gsl?: string;
   id?: string;
   q?: string;
   limit?: number;
-}): DemoRecord[] {
+}): Promise<DemoRecord[]> {
   const { gsl, id, q, limit = 50 } = opts;
-  let results = [...readDemoStore()];
+  let results = [...(await readDemoStoreAsync())];
   if (gsl) {
     results = results.filter((r) => r.gsl_code.toLowerCase().includes(gsl.toLowerCase()));
   } else if (id) {

@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
 
     // وضع العرض: ابحث في الذاكرة
     if (isDemoMode()) {
-      const demoRows = demoSearchLeave({ gsl, id, q, limit });
+      const demoRows = await demoSearchLeave({ gsl, id, q, limit });
       const formatted = demoRows.map((r) => ({
         id: r.id,
         gslCode: r.gsl_code,
