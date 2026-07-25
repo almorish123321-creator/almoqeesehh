@@ -4,31 +4,37 @@
  * مسار: /inquiries/slenquiry
  *
  * المصدر المرجعي: alehtiat-almorish/website/public/inquiry.html
+ *                 + assets/css/mo.css (header/navbar/footer)
+ *                 + assets/css/ali.css (form-control, btn)
+ *                 + assets/images/seha_logo.*.svg
  *
  * هذا الصفحة مطابقة تماماً لتصميم لوحة الاستعلام في البوت الأصلي:
  *   - نفس الخطوط: Cairo (400, 600, 700, 900) من Google Fonts
- *   - نفس الألوان:
- *       * الهيدر: خلفية رمادية فاتحة rgb(248, 249, 251)، شعار صحة أبيض (filter: brightness(0) invert(1))
+ *   - نفس الألوان (مطابقة لـ seha.sa الفعلية):
+ *       * الهيدر: خلفية بيضاء #ffffff (مطابقة لـ .header{background-color:#fff!important})
+ *       * شعار صحة ملوّن (أزرق + رمادي) WITHOUT filter — مرئي على الخلفية البيضاء
  *       * روابط الهيدر: rgb(48, 109, 181) - الأزرق الرسمي
  *       * زر تسجيل الدخول: rgb(48, 109, 181) خلفية، نص أبيض، radius 15px
+ *       * زر القائمة (الهامبرغر): ثلاثة خطوط أفقية بلون #7eb7db — يظهر على الموبايل فقط
  *       * العنوان "الإجازات المرضية": rgb(48, 109, 181)، 40px، وزن 700، مع SVG خلفي فاتح
  *       * النص الفرعي: rgb(121, 140, 161)
  *       * زر الاستعلام: Bootstrap btn-primary (#0d6efd)
  *       * الفوتر: rgb(48, 109, 181) خلفية
+ *       * شعار صحة أبيض في الفوتر (filter: brightness(0) invert(1))
  *       * خط أزرق فاتح rgb(126, 183, 219) تحت كل h3 في الفوتر
- *       * روابط الفوتر: rgb(212, 238, 255)، شعار صحة أبيض، أيقونات SVG للهاتف/الإيميل/واتساب
- *       * أيقونات وسائل التواصل: يوتيوب + تويتر (SVG)
+ *       * روابط الفوتر: rgb(212, 238, 255)
  *   - نفس الدائرة الزرقاء: 60x60، 5px solid #e0e0e0، top 5px solid #306db5، 0.8s linear
  *   - نفس الأحجام: عنوان 40px، نص فرعي 16px، حقول Bootstrap (0.375rem 0.75rem)
  *   - نفس النص العربي: "الإجازات المرضية"، "رمز الخدمة"، "رقم الهوية / الإقامة"، "استعلام"
  *   - نفس بنية الفوتر: قسم About + قسم Links + قسم Contact (مع أيقونات SVG وأيقونات تواصل)
+ *   - زر القائمة (3 خطوط) يظهر على الموبايل ويفتح/يغلق القائمة عند الضغط
  *
  * يتصل بـ /api/inquire?gsl=...&id=... ويستخرج البيانات من Vercel Blob / Postgres.
  */
 
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useToast } from "@/hooks/use-toast";
 
 interface LeaveRecord {
@@ -96,6 +102,8 @@ export default function SlenquiryPage() {
   const [error, setError] = useState<string>("");
   const [result, setResult] = useState<LeaveRecord | null>(null);
   const [showResults, setShowResults] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -224,6 +232,17 @@ export default function SlenquiryPage() {
     }
   };
 
+  const toggleMenu = () => {
+    setMenuOpen((v) => !v);
+    if (menuBtnRef.current) {
+      if (menuBtnRef.current.classList.contains("collapsed")) {
+        menuBtnRef.current.classList.remove("collapsed");
+      } else {
+        menuBtnRef.current.classList.add("collapsed");
+      }
+    }
+  };
+
   return (
     <>
       <style>{SEHA_STYLES}</style>
@@ -236,32 +255,40 @@ export default function SlenquiryPage() {
         </div>
       )}
 
-      {/* ===== Header (مطابق لـ seha.sa - خلفية رمادية فاتحة + شعار أبيض) ===== */}
+      {/* ===== Header (مطابق لـ seha.sa الفعلية - خلفية بيضاء + شعار ملوّن + زر هامبرغر للموبايل) ===== */}
       <div style={{ zIndex: 99, opacity: 1, transform: "none" }}>
         <nav className="header navbar-expand-lg navbar-light px-4">
           <div className="nav-container">
+            {/* الشعار الملوّن — يظهر دائماً (بدون filter لضمان الرؤية على الخلفية البيضاء) */}
             <a className="" href="/">
               <img
-                src="/images/seha-logo-white.svg"
+                src="/images/seha-color-logo.svg"
                 alt="logo"
                 className="logo"
-                style={{ filter: "brightness(0) invert(1)" }}
               />
             </a>
+
+            {/* زر القائمة (3 خطوط أفقية) — يظهر على الموبايل فقط ويفتح/يغلق القائمة */}
             <div className="d-lg-none d-xl-none justify-content-end menu">
               <button
                 aria-controls="responsive-navbar-nav"
                 type="button"
                 aria-label="Toggle navigation"
                 id="menu_but"
+                ref={menuBtnRef}
                 className="d-inline-flex menu-img navbar-toggler collapsed"
+                onClick={toggleMenu}
+                aria-expanded={menuOpen}
               >
                 <span className="navbar-toggler-icon"></span>
               </button>
             </div>
+
+            {/* القائمة البيضاء — قابلة للطي على الموبايل */}
             <div
-              className="white justify-content-around navbar-collapse collapse"
+              className={`white justify-content-around navbar-collapse collapse${menuOpen ? " show" : ""}`}
               id="responsive-navbar-nav"
+              style={menuOpen ? { display: "block" } : undefined}
             >
               <div className="navbar justify-content-around navbar-nav">
                 <a data-rr-ui-event-key="1" className="link nav-link active" href="/">
@@ -441,7 +468,7 @@ export default function SlenquiryPage() {
         <div className="footer">
           <div className="about section">
             <img
-              src="/images/seha-logo-white.svg"
+              src="/images/seha-color-logo.svg"
               alt="Logo"
               style={{ filter: "brightness(0) invert(1)" }}
             />
@@ -532,14 +559,26 @@ export default function SlenquiryPage() {
 /* ============================================================
  *  أنماط CSS مطابقة 100% لتصميم البوت الأصلي من alehtiat-almorish
  *  Source: alehtiat-almorish/website/public/inquiry.html + assets/css/*.css
+ *          + assets/images/صحة - منصة الخدمات الصحية_files/index-BPgz3OGf.css
  *
  *  كل القيم مأخوذة حرفياً من ملفات CSS المرجعية:
  *    - mo.css: navbar/header, footer-container, inquiry-li, results-inquiery, btn-primary, .login
  *    - ali.css: form-control base style
  *    - Ais.css: :root --primary-color #306DB5
  *    - inquiry.html <style> tag: spinner-overlay, spinner-circle, spinner-text
+ *    - index-BPgz3OGf.css (seha.sa الفعلية): .header{background-color:#fff!important}
+ *
+ *  التغييرات المهمة عن النسخة السابقة:
+ *    1. خلفية الهيدر أصبحت بيضاء (#ffffff) مطابقة لـ seha.sa الفعلية
+ *    2. شعار الهيدر الملوّن (بدون filter) — مرئي بوضوح
+ *    3. زر القائمة (3 خطوط) يظهر على الموبايل بفضل Bootstrap utility classes
+ *    4. أضيفت classes Bootstrap: d-lg-none, d-xl-none, d-inline-flex, justify-content-end
+ *    5. أضيفت أيقونة الهامبرغر الأصلية (ios-menu SVG) من mo.css
+ *    6. أضيف JavaScript toggle لإظهار/إخفاء القائمة على الموبايل
  * ============================================================ */
 const SEHA_STYLES = `
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap');
+
 :root {
   --primary-color: #306DB5;
   --secondary-color: #2c3e77;
@@ -567,6 +606,29 @@ body {
   background-color: rgb(255, 255, 255);
   font-family: 'Cairo', sans-serif;
   font-size: 1rem;
+}
+
+/* ===== Bootstrap utility classes (مطلوبة لـ d-lg-none, d-xl-none, d-inline-flex, إلخ) ===== */
+.d-none { display: none !important; }
+.d-inline-flex { display: inline-flex !important; }
+.d-flex { display: flex !important; }
+.d-block { display: block !important; }
+.justify-content-end { justify-content: flex-end !important; }
+.justify-content-around { justify-content: space-around !important; }
+.justify-content-between { justify-content: space-between !important; }
+.justify-content-center { justify-content: center !important; }
+.align-items-center { align-items: center !important; }
+.flex-wrap { flex-wrap: wrap !important; }
+.text-center { text-align: center !important; }
+.collapse:not(.show) { display: none; }
+.collapsing { height: 0; overflow: hidden; transition: height .35s ease; }
+@media (max-width: 991.98px) {
+  .d-lg-none { display: flex !important; }
+}
+@media (min-width: 992px) {
+  .d-lg-none { display: none !important; }
+  .d-lg-block { display: block !important; }
+  .d-xl-none { display: none !important; }
 }
 
 /* ===== Spinning circle animation - الدائرة المتحركة (مطابقة للبوت) ===== */
@@ -606,7 +668,12 @@ body {
   font-weight: 600;
 }
 
-/* ===== Header / Navbar (مطابق لـ mo.css - خلفية رمادية فاتحة f8f9fb) ===== */
+/* ===== Header / Navbar (مطابق لـ seha.sa الفعلية - خلفية بيضاء) =====
+ * في seha.sa الأصلية، الـ header له:
+ *   background-color: #f8f9fb  (افتراضي في mo.css)
+ *   background-color: #fff !important  (override من index-BPgz3OGf.css)
+ * النتيجة الفعلية: خلفية بيضاء
+ */
 .header, .navbar {
   display: flex;
   flex-direction: row;
@@ -615,14 +682,23 @@ body {
   z-index: 999;
   width: 100%;
   position: sticky;
-  background-color: rgb(248, 249, 251);
+  background-color: #ffffff !important;
   padding: 0% 2% !important;
+  box-shadow: rgba(99, 99, 99, 0.15) 0px 2px 8px 0px;
 }
 @media (min-width: 992px) {
   .header, .navbar {
-    background-color: rgb(248, 249, 251);
+    background-color: #ffffff !important;
+    box-shadow: none;
   }
 }
+@media (min-width: 1200px) {
+  .header, .navbar {
+    padding-inline: 4% !important;
+  }
+}
+
+/* nav-container — الحاوية الداخلية للهيدر */
 .nav-container {
   display: flex;
   flex-direction: row;
@@ -634,6 +710,14 @@ body {
   padding-bottom: 10px;
   max-width: 1400px;
 }
+@media (min-width: 992px) {
+  .nav-container {
+    padding-inline: unset;
+    padding-top: 10px;
+  }
+}
+
+/* شعار صحة في الهيدر — مرئي (بدون filter) */
 .header .logo,
 .header .navbar-brand,
 .navbar .logo,
@@ -650,8 +734,11 @@ body {
   .navbar .logo,
   .navbar .navbar-brand {
     width: auto;
+    height: 50px;
   }
 }
+
+/* زر القائمة (الهامبرغر - 3 خطوط) — يظهر على الموبايل فقط */
 .menu {
   flex: 2 1 0%;
   display: flex;
@@ -666,21 +753,34 @@ body {
   height: 40px;
   box-shadow: none;
   align-items: center;
+  justify-content: center;
   background: transparent;
   border: none;
+  cursor: pointer;
 }
 .menu .navbar-toggler-icon {
   display: inline-block;
-  width: 1.5em;
-  height: 1.5em;
-  vertical-align: middle;
-  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='rgba%2848,109,181,0.9%29' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e");
+  margin-top: 15px;
+  width: 56%;
+  height: 36px;
+  /* أيقونة ios-menu الأصلية من mo.css - 3 خطوط أفقية بلون #7eb7db */
+  background-image: url("data:image/svg+xml,%3csvg%20id='ios-menu'%20xmlns='http://www.w3.org/2000/svg'%20width='23.2'%20height='15.75'%20viewBox='0%200%2023.2%2015.75'%3e%3cpath%20id='Path_8753'%20data-name='Path%208753'%20d='M26.734,12.375H5.467A1.058,1.058,0,0,1,4.5,11.25a1.058,1.058,0,0,1,.967-1.125H26.734A1.058,1.058,0,0,1,27.7,11.25,1.058,1.058,0,0,1,26.734,12.375Z'%20transform='translate(-4.5%20-10.125)'%20fill='%237eb7db'/%3e%3cpath%20id='Path_8754'%20data-name='Path%208754'%20d='M26.734,19.125H5.467a1.138,1.138,0,0,1,0-2.25H26.734a1.138,1.138,0,0,1,0,2.25Z'%20transform='translate(-4.5%20-10.125)'%20fill='%237eb7db'/%3e%3cpath%20id='Path_8755'%20data-name='Path%208755'%20d='M26.734,25.875H5.467a1.138,1.138,0,0,1,0-2.25H26.734a1.138,1.138,0,0,1,0,2.25Z'%20transform='translate(-4.5%20-10.125)'%20fill='%237eb7db'/%3e%3c/svg%3e");
   background-repeat: no-repeat;
   background-position: center;
   background-size: 100% 100%;
 }
+.menu .navbar-toggler:not(.collapsed) .navbar-toggler-icon {
+  width: 50%;
+  /* أيقونة X (إغلاق) من mo.css - تظهر عند فتح القائمة */
+  background-image: url("data:image/svg+xml,%3csvg%20id='ios-menu'%20xmlns='http://www.w3.org/2000/svg'%20width='17.997'%20height='17.996'%20viewBox='0%200%2017.997%2017.996'%3e%3cpath%20id='Path_8753'%20data-name='Path%208753'%20d='M22.234,2.25H.967A1.058,1.058,0,0,1,0,1.125,1.058,1.058,0,0,1,.967,0H22.234A1.058,1.058,0,0,1,23.2,1.125,1.058,1.058,0,0,1,22.234,2.25Z'%20transform='translate(0%2016.405)%20rotate(-45)'%20fill='%237eb7db'/%3e%3cpath%20id='Path_8755'%20data-name='Path%208755'%20d='M22.234,2.25H.967A1.058,1.058,0,0,1,0,1.125,1.058,1.058,0,0,1,.967,0H22.234A1.058,1.058,0,0,1,23.2,1.125,1.058,1.058,0,0,1,22.234,2.25Z'%20transform='translate(16.406%2017.996)%20rotate(-135)'%20fill='%237eb7db'/%3e%3c/svg%3e");
+}
+
+/* القائمة المنسدلة (responsive-navbar-nav) — على الموبايل تكون absolute، على الديسكتوب flex */
 .white.navbar-collapse.collapse {
   display: none !important;
+}
+.white.navbar-collapse.collapse.show {
+  display: block !important;
 }
 @media (min-width: 992px) {
   .white.navbar-collapse.collapse {
@@ -688,8 +788,32 @@ body {
     flex-basis: auto;
     flex-grow: 1;
     align-items: center;
+    background-color: transparent;
+    box-shadow: unset;
+    position: unset;
+    padding: 0;
+    margin-top: 0;
   }
 }
+/* على الموبايل: القائمة تظهر كقائمة منسدلة أسفل الهيدر */
+@media (max-width: 991.98px) {
+  .white.navbar-collapse.collapse.show {
+    width: 100%;
+    margin-top: 0;
+    font-weight: 700;
+    padding-top: 30%;
+    padding-bottom: 40px;
+    background-color: #ffffff;
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: 0;
+    z-index: 1;
+    box-shadow: rgba(99, 99, 99, 0.2) 0px 4px 2px -2px;
+  }
+}
+
+/* روابط القائمة (navbar-nav) */
 .navbar-nav {
   display: flex;
   align-items: center;
@@ -697,6 +821,12 @@ body {
   padding: 0;
   margin: 0;
   gap: 8px;
+}
+@media (max-width: 991.98px) {
+  .navbar-nav {
+    flex-direction: column;
+    width: 100%;
+  }
 }
 .navbar-nav .nav-link {
   display: block;
@@ -735,6 +865,17 @@ body {
   margin: 0;
   font-size: 0.9rem;
 }
+
+/* الرابط النشط - تسطير أزرق فاتح */
+.navbar-nav .link.active {
+  color: rgb(48, 109, 181);
+  font-weight: 700;
+  text-decoration-line: underline;
+  text-underline-offset: 6px;
+  text-decoration-thickness: 3px;
+  text-decoration-color: rgb(126, 183, 219);
+}
+
 /* Login button - مطابق لـ mo.css .header .login */
 .header .login,
 .navbar .login {
@@ -750,6 +891,7 @@ body {
   white-space: nowrap;
   color: rgb(255, 255, 255) !important;
   padding: 10px 20px 10px 27px !important;
+  text-decoration: none;
 }
 @media (min-width: 992px) {
   .header .login,
@@ -760,6 +902,11 @@ body {
     padding-inline: 50px;
     gap: unset;
   }
+}
+.header .login:hover,
+.navbar .login:hover {
+  color: rgb(255, 255, 255);
+  background-color: rgb(44, 62, 119);
 }
 
 /* ===== Main / Inquiries Container (مطابق لـ mo.css) ===== */
