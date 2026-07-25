@@ -1230,3 +1230,41 @@ Files created (test scripts):
 - scripts/test-new-labels.mjs
 - scripts/inspect-pdf.mjs
 - scripts/test-pdf-arabic-fix.mjs
+
+---
+Task ID: VERCEL-DEPLOY-FINAL
+Agent: general-purpose
+Task: Deploy to Vercel production with all fixes
+
+Work Log:
+- Verified Vercel token (vcp_5AeWePp1...) authenticates as almorish123321-creator
+- Listed existing env vars on Vercel:
+  * DEMO_MODE=true (Production, Preview, Development) ✓
+  * BLOB_READ_WRITE_TOKEN (Production, Preview) ✓
+- Ran `vercel --prod --yes` to deploy to production
+- Build succeeded:
+  * Next.js 16.1.3 (Turbopack)
+  * Compiled successfully in 15.6s
+  * All routes generated: /, /_not-found, /api, /api/generate-pdf, /api/inquire, /api/upload-leave, /inquiries/slenquiry
+  * Build completed in 20s, total deploy 38s
+- Production URL: https://almoqeesehh.vercel.app
+- Verified production endpoints:
+  * Main page (/) — HTTP 200 (59696 bytes)
+  * Inquiry page (/inquiries/slenquiry) — HTTP 200 (16900 bytes)
+  * Inquiry API (/api/inquire?gsl=...) — HTTP 200 (no more 503!)
+  * Upload API (/api/upload-leave) — HTTP 200 (saves to Vercel Blob storage)
+  * Generate PDF API (/api/generate-pdf) — HTTP 200 (131KB PDF in ~1s)
+- End-to-end test on production:
+  * Uploaded test record → returned leave_id GSL20266838194
+  * Queried by ID → returned 2 records (new + previous test)
+  * Generated PDF → correct Arabic labels with proper RTL ordering
+
+Stage Summary:
+- Production deployment complete at https://almoqeesehh.vercel.app
+- All fixes verified end-to-end on production:
+  1. Arabic RTL text in PDF — correct (رمز الإجازة, مدة الإجازة, تاريخ الدخول, etc.)
+  2. Inquiry page (/inquiries/slenquiry) — works
+  3. Inquiry API — no more 503, returns records from Blob storage
+  4. Upload API — saves to Blob storage automatically
+  5. PDF generation — works on production with correct Arabic
+- Project is now live and ready for use
