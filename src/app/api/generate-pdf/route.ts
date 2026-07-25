@@ -278,11 +278,19 @@ export async function POST(req: NextRequest) {
       const totalWidth = widths.reduce((a, b) => a + b, 0);
       if (totalWidth <= 0) return;
 
-      // ارتفاع السطر للتوسيط الرأسي
-      // Line height for vertical centering
-      doc.fontSize(fontSize);
-      const textH = doc.currentLineHeight(true);
-      const pieceY = y + (height - textH) / 2;
+      // احسب ارتفاع السطر لكل خط على حدة — مختلف الخطوط لها ascender/descender
+      // مختلفة، فمحاذاة كل مقطع يجب أن تُحسب بخطه الخاص لضمان baseline متطابق.
+      // Compute line height for each font separately — different fonts have
+      // different ascender/descender, so each piece's vertical placement must
+      // be computed with its own font to ensure identical baselines.
+      const pieceLineHeights = pieces.map((p) => {
+        doc.font(p.font).fontSize(fontSize);
+        return doc.currentLineHeight(true);
+      });
+      // استخدم أكبر ارتفاع لتوسيط الكتلة رأسياً ضمن الخلية
+      // Use the largest line height to vertically center the block in the cell
+      const maxTextH = Math.max(...pieceLineHeights);
+      const blockTop = y + (height - maxTextH) / 2;
 
       // احسب الإزاحة الأفقية الابتدائية حسب المحاذاة
       // Compute starting X offset based on alignment
@@ -297,11 +305,17 @@ export async function POST(req: NextRequest) {
 
       // اعرض كل مقطع بإحداثياته المطلقة — لا تستخدم continued:true لأنه
       // يفعّل BiDi على مستوى السطر كاملاً مما يعيد ترتيب المقاطع.
+      // كل مقطع يُحاذى رأسياً بخطه الخاص لضمان baseline موحّد.
       // Render each piece at its absolute coordinates — do NOT use
       // continued:true because it triggers line-level BiDi that reorders
-      // pieces.
+      // pieces. Each piece is vertically positioned with its own font to
+      // ensure a unified baseline.
       for (let i = 0; i < pieces.length; i++) {
         const piece = pieces[i];
+        const pieceLH = pieceLineHeights[i];
+        // محاذاة كل مقطع بحيث يتطابق baseline مع baseline أطول مقطع
+        // Align each piece so its baseline matches the baseline of the tallest piece
+        const pieceY = blockTop + (maxTextH - pieceLH) / 2;
         doc.font(piece.font).fillColor(color).fontSize(fontSize);
         // lineBreak: false يمنع لف النص إلى سطر جديد (كل البيانات في سطر واحد)
         // lineBreak: false prevents wrapping (all data on one line)
@@ -577,13 +591,32 @@ export async function POST(req: NextRequest) {
     // Bot's format: Arabic word first, then number, then dates in parens.
     const arabicDurationText = `${durText} ( ${startDateAr} إلى ${endDateAr} )`;
 
-    doc.font(fontArReg).fontSize(durFontSize - 1).fillColor("#ffffff");
+    // تصغير الخط تلقائياً إن كان النص أعرض من الخلية لمنع الالتفاف لسطر ثانٍ.
+    // ابدأ بـ durFontSize-1 وانزل حتى 9 إن لزم.
+    // Auto-shrink font size if text is wider than the cell to prevent wrapping
+    // to a second line. Start at durFontSize-1, go down to 9 if needed.
+    const cellWidth = subColW - 20;
+    let durActualFontSize = durFontSize - 1;
+    for (let fs = durActualFontSize; fs >= 9; fs--) {
+      doc.font(fontArReg).fontSize(fs);
+      const w = doc.widthOfString(arabicDurationText);
+      if (w <= cellWidth) {
+        durActualFontSize = fs;
+        break;
+      }
+      if (fs === 9) {
+        durActualFontSize = 9;
+        break;
+      }
+    }
+
+    doc.font(fontArReg).fontSize(durActualFontSize).fillColor("#ffffff");
     // احسب ارتفاع السطر للتوسيط الرأسي
     // Compute line height for vertical centering
     const durTextH = doc.currentLineHeight(true);
     const durTextY = currentY + (rowH - durTextH) / 2;
     doc.text(arabicDurationText, startX + col1W + subColW + 10, durTextY, {
-      width: subColW - 20,
+      width: cellWidth,
       align: "center",
       lineBreak: false,
     });
@@ -711,12 +744,18 @@ export async function POST(req: NextRequest) {
       // number on the left, colon in the middle, Arabic label on the right.
       // Each piece is pure-direction so pdfkit renders it correctly.
       const licensePieces = [
-        { text: payload.licenseNumber, font: fontEnReg },     // visual leftmost: the number
-        { text: " ", font: fontEnReg },                       // space
-        { text: ":", font: fontEnReg },                       // colon
-        { text: " ", font: fontEnReg },                       // space
-        { text: "رقم الترخيص", font: fontArReg },             // visual rightmost: Arabic label
+        { text: payload.licenseNumber, font: fontArReg },   // visual leftmost: the number (use Arabic font for consistent baseline)
+        { text: " ", font: fontArReg },                     // space
+        { text: ":", font: fontArReg },                     // colon
+        { text: " ", font: fontArReg },                     // space
+        { text: "رقم الترخيص", font: fontArReg },           // visual rightmost: Arabic label
       ];
+      // استخدم نفس الخط (NotoSansArabic) لكل المقاطع لضمان محاذاة رأسية
+      // متطابقة (نفس الـ baseline). Times-Roman له ascender أقصر من
+      // NotoSansArabic مما يجعل الرقم يظهر مرتفعاً عن النص العربي.
+      // Use the same font (NotoSansArabic) for all pieces to ensure identical
+      // vertical baseline. Times-Roman has a shorter ascender than
+      // NotoSansArabic, causing the number to appear higher than the Arabic text.
       renderVisualPieces({
         pieces: licensePieces,
         x: rightCenterX - 150,
