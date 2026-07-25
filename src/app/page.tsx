@@ -129,6 +129,29 @@ export default function Home() {
   const [records, setRecords] = useState<any[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
 
+  // --- Mobile menu state (قائمة الهامبرغر 3 خطوط - مطابقة لـ seha.sa) ---
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
+
+  const toggleMenu = () => {
+    setMenuOpen((v) => !v);
+    if (menuBtnRef.current) {
+      if (menuBtnRef.current.classList.contains("collapsed")) {
+        menuBtnRef.current.classList.remove("collapsed");
+      } else {
+        menuBtnRef.current.classList.add("collapsed");
+      }
+    }
+  };
+  const closeMenu = () => {
+    if (menuOpen) {
+      setMenuOpen(false);
+      if (menuBtnRef.current && !menuBtnRef.current.classList.contains("collapsed")) {
+        menuBtnRef.current.classList.add("collapsed");
+      }
+    }
+  };
+
   const isBusy = action.pdf === "loading" || action.upload === "loading";
 
   // عند العودة من صفحة الاستعلام (/inquiries/slenquiry) مع بيانات محملة،
@@ -497,45 +520,108 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="min-h-screen flex flex-col bg-gradient-to-b from-sky-50 via-white to-white">
-      <header className="bg-gradient-to-l from-[#2c3e77] via-[#306db5] to-[#2c3e77] text-white shadow-md">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-5 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <img
-              src="/images/seha-logo.jpg"
-              alt="شعار صحة"
-              className="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-white/95 p-1 object-contain"
-            />
-            <div>
-              <h1 className="text-lg sm:text-2xl font-bold leading-tight">
-                منصة إصدار تقرير الإجازة المرضية
-              </h1>
-              <p className="text-xs sm:text-sm text-white/80">
-                صفحة إدخال بيانات — تطبع ملف PDF وتحفظ البيانات في قاعدة Vercel Postgres
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <a
-              href="/inquiries/slenquiry"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-white/15 border border-white/30 px-3 py-1.5 text-xs sm:text-sm font-medium text-white hover:bg-white/25 transition-colors"
-              title="صفحة الاستعلام عن الإجازة المرضية"
-            >
-              <Search className="h-4 w-4" />
-              <span className="hidden sm:inline">صفحة الاستعلام</span>
-              <span className="sm:hidden">استعلام</span>
+    <div className="min-h-screen flex flex-col bg-white seha-entry-page">
+      {/* ===== ترويسة مطابقة 100% لـ seha.sa الأصلية (خلفية فاتحة + شعار ملوّن + زر قائمة 3 خطوط) ===== */}
+      <style>{SEHA_ENTRY_STYLES}</style>
+      <div style={{ zIndex: 99, opacity: 1, transform: "none" }}>
+        <nav className="seha-header navbar-expand-lg navbar-light px-4">
+          <div className="nav-container">
+            {/* الشعار الملوّن — مرئي بدون filter على الخلفية الفاتحة */}
+            <a className="" href="/" aria-label="الرئيسية">
+              <img
+                src="/images/seha-color-logo.svg"
+                alt="صحة - منصة الخدمات الصحية"
+                className="seha-logo"
+              />
             </a>
-            <div className="hidden md:flex items-center gap-2 text-xs text-white/70">
-              <Badge className="bg-white/20 text-white border-white/30 hover:bg-white/30">
-                Vercel-only
-              </Badge>
-              <Badge className="bg-white/20 text-white border-white/30 hover:bg-white/30">
-                Vercel Postgres
-              </Badge>
+
+            {/* زر القائمة (3 خطوط أفقية) — يظهر على الموبايل فقط ويفتح/يغلق القائمة */}
+            <div className="d-lg-none d-xl-none justify-content-end menu">
+              <button
+                aria-controls="responsive-navbar-nav"
+                type="button"
+                aria-label="Toggle navigation"
+                id="menu_but"
+                ref={menuBtnRef}
+                className="d-inline-flex menu-img navbar-toggler collapsed"
+                onClick={toggleMenu}
+                aria-expanded={menuOpen}
+              >
+                <span className="navbar-toggler-icon"></span>
+              </button>
+            </div>
+
+            {/* القائمة — قابلة للطي على الموبايل، مرئية دائماً على الديسكتوب */}
+            <div
+              className={`white justify-content-around navbar-collapse collapse${menuOpen ? " show" : ""}`}
+              id="responsive-navbar-nav"
+              style={menuOpen ? { display: "block" } : undefined}
+            >
+              <div className="navbar justify-content-around navbar-nav">
+                <a
+                  data-rr-ui-event-key="1"
+                  className="link nav-link active"
+                  href="/"
+                  onClick={closeMenu}
+                >
+                  الرئيسية
+                </a>
+                <a
+                  data-rr-ui-event-key="2"
+                  className="link nav-link"
+                  href="/#services"
+                  onClick={closeMenu}
+                >
+                  الخدمات
+                </a>
+                <a
+                  data-rr-ui-event-key="3"
+                  className="link nav-link"
+                  href="/inquiries/slenquiry"
+                  onClick={closeMenu}
+                >
+                  الاستعلامات
+                </a>
+                <a
+                  data-rr-ui-event-key="4"
+                  className="link nav-link"
+                  href="/#faq"
+                  onClick={closeMenu}
+                >
+                  الأسئلة الشائعة
+                </a>
+                <a
+                  data-rr-ui-event-key="5"
+                  className="link nav-link"
+                  href="/#contactus"
+                  onClick={closeMenu}
+                >
+                  تواصل معنا
+                </a>
+              </div>
+              <div className="navbar justify-content-end navbar-nav">
+                <a
+                  data-rr-ui-event-key="6"
+                  className="nav-link"
+                  href="/#signup"
+                  onClick={closeMenu}
+                >
+                  <p>إنشاء حساب</p>
+                </a>
+                <a
+                  data-rr-ui-event-key="7"
+                  className="login nav-link"
+                  href="/#login"
+                  style={{ display: "flex", alignItems: "center", gap: "5px" }}
+                  onClick={closeMenu}
+                >
+                  <p style={{ margin: 0 }}>تسجيل الدخول</p>
+                </a>
+              </div>
             </div>
           </div>
-        </div>
-      </header>
+        </nav>
+      </div>
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8">
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="space-y-6">
@@ -950,6 +1036,251 @@ export default function Home() {
     </div>
   );
 }
+
+/* ============================================================
+ *  أنماط الترويسة على صفحة الإدخال — مطابقة 100% لـ seha.sa الأصلية
+ *  نفس القيم المستخدمة في /inquiries/slenquiry لضمان تطابق الترويسة
+ * ============================================================ */
+const SEHA_ENTRY_STYLES = `
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap');
+
+.seha-entry-page {
+  font-family: 'Cairo', sans-serif;
+}
+
+/* Bootstrap utility classes */
+.d-none { display: none !important; }
+.d-inline-flex { display: inline-flex !important; }
+.d-flex { display: flex !important; }
+.justify-content-end { justify-content: flex-end !important; }
+.justify-content-around { justify-content: space-around !important; }
+.align-items-center { align-items: center !important; }
+.collapse:not(.show) { display: none; }
+@media (max-width: 991.98px) {
+  .d-lg-none { display: flex !important; }
+}
+@media (min-width: 992px) {
+  .d-lg-none { display: none !important; }
+  .d-xl-none { display: none !important; }
+}
+
+/* Header — مطابق لـ seha.sa الأصلية */
+.seha-header, .navbar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+  width: 100%;
+  position: sticky;
+  background-color: rgb(248, 249, 251) !important;
+  padding: 0% 2% !important;
+  box-shadow: rgba(99, 99, 99, 0.15) 0px 2px 8px 0px;
+}
+@media (min-width: 992px) {
+  .seha-header, .navbar {
+    box-shadow: none;
+  }
+}
+@media (min-width: 1200px) {
+  .seha-header, .navbar {
+    padding-inline: 4% !important;
+  }
+}
+
+.nav-container {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: inherit;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  max-width: 1400px;
+}
+
+.seha-header .seha-logo,
+.navbar .seha-logo {
+  flex: 0.5 1 0%;
+  margin-inline-start: 2px;
+  z-index: 999;
+  width: 90px;
+  height: auto;
+}
+@media (min-width: 768px) {
+  .seha-header .seha-logo,
+  .navbar .seha-logo {
+    width: auto;
+    height: 50px;
+  }
+}
+
+.menu {
+  flex: 2 1 0%;
+  display: flex;
+  z-index: 999;
+  align-items: center;
+  margin: 0;
+  margin-inline-end: 16px;
+}
+.menu .navbar-toggler {
+  padding: 0;
+  width: 40px;
+  height: 40px;
+  box-shadow: none;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.menu .navbar-toggler-icon {
+  display: inline-block;
+  margin-top: 15px;
+  width: 56%;
+  height: 36px;
+  background-image: url("data:image/svg+xml,%3csvg%20id='ios-menu'%20xmlns='http://www.w3.org/2000/svg'%20width='23.2'%20height='15.75'%20viewBox='0%200%2023.2%2015.75'%3e%3cpath%20id='Path_8753'%20data-name='Path%208753'%20d='M26.734,12.375H5.467A1.058,1.058,0,0,1,4.5,11.25a1.058,1.058,0,0,1,.967-1.125H26.734A1.058,1.058,0,0,1,27.7,11.25,1.058,1.058,0,0,1,26.734,12.375Z'%20transform='translate(-4.5%20-10.125)'%20fill='%237eb7db'/%3e%3cpath%20id='Path_8754'%20data-name='Path%208754'%20d='M26.734,19.125H5.467a1.138,1.138,0,0,1,0-2.25H26.734a1.138,1.138,0,0,1,0,2.25Z'%20transform='translate(-4.5%20-10.125)'%20fill='%237eb7db'/%3e%3cpath%20id='Path_8755'%20data-name='Path%208755'%20d='M26.734,25.875H5.467a1.138,1.138,0,0,1,0-2.25H26.734a1.138,1.138,0,0,1,0,2.25Z'%20transform='translate(-4.5%20-10.125)'%20fill='%237eb7db'/%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 100% 100%;
+}
+.menu .navbar-toggler:not(.collapsed) .navbar-toggler-icon {
+  width: 50%;
+  background-image: url("data:image/svg+xml,%3csvg%20id='ios-menu'%20xmlns='http://www.w3.org/2000/svg'%20width='17.997'%20height='17.996'%20viewBox='0%200%2017.997%2017.996'%3e%3cpath%20id='Path_8753'%20data-name='Path%208753'%20d='M22.234,2.25H.967A1.058,1.058,0,0,1,0,1.125,1.058,1.058,0,0,1,.967,0H22.234A1.058,1.058,0,0,1,23.2,1.125,1.058,1.058,0,0,1,22.234,2.25Z'%20transform='translate(0%2016.405)%20rotate(-45)'%20fill='%237eb7db'/%3e%3cpath%20id='Path_8755'%20data-name='Path%208755'%20d='M22.234,2.25H.967A1.058,1.058,0,0,1,0,1.125,1.058,1.058,0,0,1,.967,0H22.234A1.058,1.058,0,0,1,23.2,1.125,1.058,1.058,0,0,1,22.234,2.25Z'%20transform='translate(16.406%2017.996)%20rotate(-135)'%20fill='%237eb7db'/%3e%3c/svg%3e");
+}
+
+.white.navbar-collapse.collapse {
+  display: none !important;
+  visibility: visible !important;
+}
+.white.navbar-collapse.collapse.show {
+  display: block !important;
+  visibility: visible !important;
+}
+@media (min-width: 992px) {
+  .white.navbar-collapse.collapse {
+    display: flex !important;
+    visibility: visible !important;
+    flex-basis: auto;
+    flex-grow: 1;
+    align-items: center;
+    background-color: transparent;
+    box-shadow: unset;
+    position: unset;
+    padding: 0;
+    margin-top: 0;
+  }
+}
+@media (max-width: 991.98px) {
+  .white.navbar-collapse.collapse.show {
+    width: 100%;
+    margin-top: 0;
+    font-weight: 700;
+    padding-top: 30%;
+    padding-bottom: 40px;
+    background-color: rgb(248, 249, 251);
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: 0;
+    z-index: 1;
+    box-shadow: rgba(99, 99, 99, 0.2) 0px 4px 2px -2px;
+    visibility: visible !important;
+  }
+}
+
+.navbar-nav {
+  display: flex;
+  align-items: center;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  gap: 8px;
+}
+@media (max-width: 991.98px) {
+  .navbar-nav {
+    flex-direction: column;
+    width: 100%;
+  }
+}
+.navbar-nav .nav-link {
+  display: block;
+  font-weight: 400;
+  text-align: center;
+  color: #306DB5;
+  padding: 8px 12px;
+  font-size: 0.9rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+@media (min-width: 992px) {
+  .navbar-nav .nav-link {
+    margin: 0;
+    padding-block: 0;
+    font-size: 0.8rem;
+  }
+  .navbar-nav .nav-link { font-size: 1rem; }
+}
+.navbar-nav .nav-link:hover {
+  color: rgb(44, 62, 119);
+}
+.navbar-nav .link {
+  font-size: 15px;
+  font-weight: 600;
+  align-items: center;
+  align-self: center;
+}
+.navbar-nav:last-child {
+  margin-inline-start: auto;
+  margin-inline-end: 30px;
+}
+.navbar-nav:last-child .nav-link p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.navbar-nav .link.active {
+  color: rgb(48, 109, 181);
+  font-weight: 700;
+  text-decoration-line: underline;
+  text-underline-offset: 6px;
+  text-decoration-thickness: 3px;
+  text-decoration-color: rgb(126, 183, 219);
+}
+
+.seha-header .login,
+.navbar .login {
+  display: inline-flex;
+  font-size: 16px;
+  margin-top: 20px;
+  margin-inline: 10%;
+  border-radius: 15px;
+  background: rgb(48, 109, 181);
+  font-weight: 400;
+  flex-direction: row;
+  justify-content: center;
+  white-space: nowrap;
+  color: rgb(255, 255, 255) !important;
+  padding: 10px 20px 10px 27px !important;
+  text-decoration: none;
+}
+@media (min-width: 992px) {
+  .seha-header .login,
+  .navbar .login {
+    justify-content: unset;
+    margin-top: 0px;
+    margin-inline: 30px;
+    padding-inline: 50px;
+    gap: unset;
+  }
+}
+.seha-header .login:hover,
+.navbar .login:hover {
+  color: rgb(255, 255, 255);
+  background-color: rgb(44, 62, 119);
+}
+`;
 
 /* ============================ Sub-components ============================ */
 
