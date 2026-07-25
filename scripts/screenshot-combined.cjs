@@ -76,7 +76,7 @@ async function main() {
   // 2. Our production page
   console.log('Loading our production page...');
   await page.goto('https://almoqeesehh.vercel.app/inquiries/slenquiry', { waitUntil: 'load', timeout: 60000 });
-  await page.waitForTimeout(5000);
+  await page.waitForTimeout(8000);
   await page.screenshot({ path: '/home/z/my-project/download/compare-ours-empty.png', fullPage: true });
 
   await page.fill('input[name="service_code"]', 'GSL20266838194');
