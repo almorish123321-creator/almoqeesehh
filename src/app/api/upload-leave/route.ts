@@ -65,36 +65,47 @@ export async function POST(req: NextRequest) {
 
     // اضمن وجود الجداول (آمن للاستدعاء المتكرر) — أو احفظ في الذاكرة في وضع DEMO
     if (isDemoMode()) {
-      const saved = await demoUpsertLeave({
-        gsl_code: leaveNumber,
-        identity_number: filled.id_number,
-        name_ar: filled.patient_name_ar,
-        name_en: emptyToNull(filled.patient_name_en) ?? filled.patient_name_ar,
-        date_from: entryDate || new Date().toISOString().slice(0, 10),
-        date_to: exitDate || new Date().toISOString().slice(0, 10),
-        day_count: dayCount,
-        issue_date: issueDate,
-        time_from: timeDisplay,
-        nationality_ar: natAr,
-        nationality_en: natEn,
-        employer: emptyToNull(filled.employer_ar),
-        employer_en: emptyToNull(filled.employer_en),
-        doctor_name_ar: docAr,
-        doctor_name_en: docEn,
-        doctor_specialty_ar: specAr,
-        doctor_specialty_en: specEn,
-        hospital_name_ar: hospAr,
-        hospital_name_en: hospEn,
-        license_number: licenseNumber,
-        leave_type: "sick",
-      });
-      return NextResponse.json({
-        success: true,
-        message: "[وضع العرض] تم حفظ الإجازة في الذاكرة المؤقتة — على Vercel ستُحفظ فعلياً في Vercel Postgres.",
-        leave_id: leaveNumber,
-        day_count: dayCount,
-        record_id: saved.id,
-      });
+      try {
+        const saved = await demoUpsertLeave({
+          gsl_code: leaveNumber,
+          identity_number: filled.id_number,
+          name_ar: filled.patient_name_ar,
+          name_en: emptyToNull(filled.patient_name_en) ?? filled.patient_name_ar,
+          date_from: entryDate || new Date().toISOString().slice(0, 10),
+          date_to: exitDate || new Date().toISOString().slice(0, 10),
+          day_count: dayCount,
+          issue_date: issueDate,
+          time_from: timeDisplay,
+          nationality_ar: natAr,
+          nationality_en: natEn,
+          employer: emptyToNull(filled.employer_ar),
+          employer_en: emptyToNull(filled.employer_en),
+          doctor_name_ar: docAr,
+          doctor_name_en: docEn,
+          doctor_specialty_ar: specAr,
+          doctor_specialty_en: specEn,
+          hospital_name_ar: hospAr,
+          hospital_name_en: hospEn,
+          license_number: licenseNumber,
+          leave_type: "sick",
+        });
+        return NextResponse.json({
+          success: true,
+          message: "[وضع العرض] تم حفظ الإجازة في Vercel Blob storage.",
+          leave_id: leaveNumber,
+          day_count: dayCount,
+          record_id: saved.id,
+        });
+      } catch (demoErr: any) {
+        console.error("[upload-leave] demo mode error:", demoErr);
+        return NextResponse.json(
+          {
+            success: false,
+            message: `فشل الحفظ في وضع العرض: ${demoErr?.message || "خطأ غير متوقع"}`,
+          },
+          { status: 500 },
+        );
+      }
     }
 
     try {
