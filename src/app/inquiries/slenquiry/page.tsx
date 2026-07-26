@@ -105,27 +105,6 @@ export default function SlenquiryPage() {
     return () => window.removeEventListener("resize", onResize);
   }, [menuOpen]);
 
-  // ============================================================
-  // 🆕 قراءة معلمات الرابط تلقائياً — عند فتح الصفحة من رابط
-  // يحوي gsl و id (مثل رابط الـ PDF المولد)، يتم تعبئة النموذج
-  // تلقائياً وتنفيذ الاستعلام فوراً لعرض تفاصيل الإجازة.
-  // ============================================================
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const urlGsl = params.get("gsl")?.trim() || "";
-    const urlId = params.get("id")?.trim() || "";
-    if (urlGsl && urlId) {
-      setServiceCode(urlGsl);
-      setNationalId(urlId);
-      // Trigger automatic query after state updates
-      setTimeout(() => {
-        const form = document.querySelector<HTMLFormElement>('form[data-form="slenquiry"]');
-        if (form) form.requestSubmit();
-      }, 200);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const code = serviceCode.trim();
@@ -294,18 +273,8 @@ export default function SlenquiryPage() {
       <div style={{ zIndex: 99, opacity: 1, transform: "none" }}>
         <nav className="header navbar-expand-lg navbar-light px-4">
           <div className="nav-container">
-            {/* الشعار الملوّن — مرئي بدون filter على الخلفية الفاتحة
-                صفحة الاستعلام منفصلة عن لوحة الإدخال، فالشعار لا ينتقل
-                المستخدم إلى /. بدلاً من ذلك يبقى في صفحة الاستعلام. */}
-            <a
-              className=""
-              href="/inquiries/slenquiry"
-              aria-label="الاستعلامات"
-              onClick={(e) => {
-                e.preventDefault();
-                resetForm();
-              }}
-            >
+            {/* الشعار الملوّن — مرئي بدون filter على الخلفية الفاتحة */}
+            <a className="" href="/" aria-label="الرئيسية">
               <img
                 src="/images/seha-color-logo.svg"
                 alt="صحة - منصة الخدمات الصحية"
@@ -336,22 +305,19 @@ export default function SlenquiryPage() {
               style={menuOpen ? { display: "block" } : undefined}
             >
               <div className="navbar justify-content-around navbar-nav">
-                {/* روابط nav في صفحة الاستعلام تبقى في نفس الصفحة —
-                    لا تنتقل المستخدم إلى لوحة الإدخال. فقط "الاستعلامات"
-                    نشط والباقي تتصرف كأزرار بدون تنقل (preventDefault). */}
                 <a
                   data-rr-ui-event-key="1"
                   className="link nav-link"
-                  href="/inquiries/slenquiry"
-                  onClick={(e) => { e.preventDefault(); closeMenu(); resetForm(); }}
+                  href="/"
+                  onClick={closeMenu}
                 >
                   الرئيسية
                 </a>
                 <a
                   data-rr-ui-event-key="2"
                   className="link nav-link"
-                  href="/inquiries/slenquiry"
-                  onClick={(e) => { e.preventDefault(); closeMenu(); }}
+                  href="/#services"
+                  onClick={closeMenu}
                 >
                   الخدمات
                 </a>
@@ -359,44 +325,42 @@ export default function SlenquiryPage() {
                   data-rr-ui-event-key="3"
                   className="link nav-link active"
                   href="/inquiries/slenquiry"
-                  onClick={(e) => { e.preventDefault(); closeMenu(); }}
+                  onClick={closeMenu}
                 >
                   الاستعلامات
                 </a>
                 <a
                   data-rr-ui-event-key="4"
                   className="link nav-link"
-                  href="/inquiries/slenquiry"
-                  onClick={(e) => { e.preventDefault(); closeMenu(); }}
+                  href="/#faq"
+                  onClick={closeMenu}
                 >
                   الأسئلة الشائعة
                 </a>
                 <a
                   data-rr-ui-event-key="5"
                   className="link nav-link"
-                  href="/inquiries/slenquiry"
-                  onClick={(e) => { e.preventDefault(); closeMenu(); }}
+                  href="/#contactus"
+                  onClick={closeMenu}
                 >
                   تواصل معنا
                 </a>
               </div>
               <div className="navbar justify-content-end navbar-nav">
-                {/* أزرار إنشاء حساب/تسجيل الدخول في صفحة الاستعلام تبقى في
-                    نفس الصفحة — لا تنتقل المستخدم إلى لوحة الإدخال. */}
                 <a
                   data-rr-ui-event-key="6"
                   className="nav-link"
-                  href="/inquiries/slenquiry"
-                  onClick={(e) => { e.preventDefault(); closeMenu(); }}
+                  href="/#signup"
+                  onClick={closeMenu}
                 >
                   <p>إنشاء حساب</p>
                 </a>
                 <a
                   data-rr-ui-event-key="7"
                   className="login nav-link"
-                  href="/inquiries/slenquiry"
+                  href="/#login"
                   style={{ display: "flex", alignItems: "center", gap: "5px" }}
-                  onClick={(e) => { e.preventDefault(); closeMenu(); }}
+                  onClick={closeMenu}
                 >
                   <p style={{ margin: 0 }}>تسجيل الدخول</p>
                 </a>
@@ -424,7 +388,7 @@ export default function SlenquiryPage() {
               {error}
             </p>
 
-            <form id="inquiryForm" data-form="slenquiry" onSubmit={onSubmit}>
+            <form id="inquiryForm" onSubmit={onSubmit}>
               <div className="form-group">
                 <input
                   type="text"
@@ -537,15 +501,10 @@ export default function SlenquiryPage() {
             </form>
           </div>
           <div className="col-md-12 text-center">
-            {/* زر "استعلام جديد" — يبقى في صفحة الاستعلام ولا ينتقل
-                المستخدم إلى لوحة الإدخال. صفحة الاستعلام منفصلة تماماً. */}
-            <button
-              type="button"
-              className="btn btn-primary mb-3"
-              onClick={resetForm}
-            >
-              استعلام جديد
-            </button>
+            {/* زر "رجوع للاستعلامات" — ينتقل لصفحة الإدخال (/) */}
+            <a className="btn btn-primary mb-3" href="/">
+              رجوع للاستعلامات
+            </a>
           </div>
         </div>
       </div>
@@ -567,31 +526,17 @@ export default function SlenquiryPage() {
           <div className="links section" style={{ alignItems: "center" }}>
             <h3 className="heading">القائمة الرئيسية</h3>
             <ul className="links-wrapepr">
-              {/* روابط القائمة الرئيسية في الـfooter تبقى في صفحة الاستعلام
-                  ولا تنقل المستخدم إلى لوحة الإدخال. */}
               <li className="inquiry-li">
-                <a
-                  className="nav-link"
-                  href="/inquiries/slenquiry"
-                  onClick={(e) => e.preventDefault()}
-                >الخدمات</a>
+                <a className="nav-link" href="/#services">الخدمات</a>
               </li>
               <li className="inquiry-li">
                 <a className="nav-link" href="/inquiries/slenquiry">الاستعلامات</a>
               </li>
               <li className="inquiry-li">
-                <a
-                  className="nav-link"
-                  href="/inquiries/slenquiry"
-                  onClick={(e) => e.preventDefault()}
-                >الأسئلة الشائعة</a>
+                <a className="nav-link" href="/#faq">الأسئلة الشائعة</a>
               </li>
               <li className="inquiry-li" style={{ borderBottom: "none" }}>
-                <a
-                  className="nav-link"
-                  href="/inquiries/slenquiry"
-                  onClick={(e) => e.preventDefault()}
-                >تواصل معنا</a>
+                <a className="nav-link" href="/#contactus">تواصل معنا</a>
               </li>
             </ul>
           </div>

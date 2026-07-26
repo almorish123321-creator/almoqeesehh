@@ -3,23 +3,9 @@
  * Body: LeaveFormData (JSON)
  * Response: application/pdf (the sick leave report)
  *
- * Generates a bilingual (Arabic/English) Sick Leave Report PDF that EXACTLY
- * matches the reference PDF (sickleave (2).pdf).
- *
- * Arabic text handling mirrors the Python bot's `pdf_generator_updated.py`:
- *   1. `arabicReshape()` — convert base letters to Presentation Forms
- *      (isolated/initial/medial/final) based on context. This makes letters
- *      connect properly in PDFKit (which doesn't ship HarfBuzz).
- *   2. `bidiGetDisplay()` — apply Unicode Bidirectional Algorithm to reorder
- *      characters for visual display.
- *
- * Together this reproduces Python's:
- *   reshaped = arabic_reshaper.reshape(text)
- *   bidi_text = get_display(reshaped)
- *
- * For pure Arabic text (labels, names): use processArabicText()
- * For mixed text (e.g. "1 يوم ( 2026-06-09 إلى 2026-06-09 )"): use safeArabicMixed()
- *   (same pipeline — bidi algorithm handles LTR runs correctly)
+ * Generates a bilingual (Arabic/English) Sick Leave Report PDF mirroring
+ * the layout of the original Python bot's pdf_generator_updated.py and
+ * the website's sickLeaveReportGenerator.js.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -38,10 +24,6 @@ import {
   toISODate,
   toTimeDisplay,
 } from "@/lib/parser";
-import {
-  processArabicText,
-  safeArabicMixed,
-} from "@/lib/arabic-text";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -81,6 +63,7 @@ export interface ApiPayload {
 
 /**
  * Build the API payload (the same shape the Python bot sent to /api/bot/add_leave).
+ * Mirrors bot/api_client.py send_leave_data_to_api.
  */
 export function buildApiPayload(data: LeaveFormData): ApiPayload {
   const filled: LeaveFormData = { ...DEFAULTS, ...data } as any;
@@ -131,25 +114,24 @@ export async function POST(req: NextRequest) {
     const body = (await req.json()) as LeaveFormData;
     const payload = buildApiPayload(body);
 
-    // ============================================================
-    // PAGE SIZE — match reference PDF exactly (841.89 × 1187.72)
-    // ============================================================
     const pageWidth = 841.89;
-    const pageHeight = 1187.72;
+    const pageHeight = 1150;
     const doc = new PDFDocument({
       size: [pageWidth, pageHeight],
-      margins: { top: 0, bottom: 0, left: 0, right: 0 },
+      margins: { top: 40, bottom: 40, left: 40, right: 40 },
     });
 
     const arRegExists = fs.existsSync(FONT_AR_REG);
     const arBoldExists = fs.existsSync(FONT_AR_BOLD);
     const fontArReg = arRegExists ? FONT_AR_REG : "Helvetica";
     const fontArBold = arBoldExists ? FONT_AR_BOLD : "Helvetica-Bold";
+    const useArabicFont = arRegExists && arBoldExists;
 
     const fontEnReg = "Times-Roman";
     const fontEnBold = "Times-Bold";
 
-    // Decode uploaded hospital logo (base64 data URL) into Buffer if present
+    // فك ترميز الشعار المرفوع (base64 data URL) إلى Buffer إن وُجد
+    // Decode the uploaded hospital logo (base64 data URL) into a Buffer if present
     let uploadedLogoBuffer: Buffer | null = null;
     if (body.hospital_logo && typeof body.hospital_logo === "string") {
       const matches = body.hospital_logo.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
@@ -162,540 +144,652 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ============================================================
-    // COLOR CONSTANTS — extracted from reference PDF via PyMuPDF
-    // ============================================================
-    const COLOR_TITLE_AR = "#306db5";
-    const COLOR_TITLE_EN = "#2c3e77";
-    const COLOR_LABEL = "#366fb5";
-    const COLOR_VALUE_DARK = "#2c3e77";
-    const COLOR_DURATION_BG = "#2b3d77";
-    const COLOR_ALT_ROW_BG = "#f6f6f6";
-    const COLOR_BORDER = "#d9d9d9";
-    const COLOR_WHITE = "#ffffff";
-    const COLOR_BLACK = "#000000";
-    const COLOR_LINK = "#0000ff";
-
-    // ============================================================
-    // TEXT RENDERERS
-    // ============================================================
-
-    /**
-     * Render PURE Arabic text — mirrors Python's process_arabic_text():
-     *   reshaped = arabic_reshaper.reshape(text)
-     *   bidi_text = get_display(reshaped)
-     *
-     * The output is in VISUAL order with presentation forms, ready to render
-     * directly in PDFKit without pdfkit doing its own BiDi.
-     *
-     * IMPORTANT: pdfkit splits text at space characters and processes each
-     * run separately. For Arabic, this causes incorrect word order because
-     * each run is reversed but the runs are positioned left-to-right.
-     *
-     * Fix: replace regular spaces (U+0020) with non-breaking spaces (U+00A0)
-     * so pdfkit treats the entire text as a single run. The non-breaking space
-     * is rendered as a regular space visually.
-     *
-     * To prevent pdfkit's internal BiDi (which would double-reverse visual-
-     * order text and produce garbage):
-     *   - Use `align: "center"` or `align: "left"` (NOT "right" — triggers RTL)
-     *   - Use `lineBreak: false`
-     *   - Do NOT use `features: ["rtla"]`
-     */
     const drawTextAr = (text: string, x: number, y: number, options: any = {}) => {
       const fontToUse = options.weight === "bold" ? fontArBold : fontArReg;
       if (options.fontSize) doc.fontSize(options.fontSize);
       if (options.color) doc.fillColor(options.color);
 
-      // Process Arabic text: reshape + bidi → visual order
-      const processed = processArabicText(text);
-      // Replace spaces with non-breaking spaces to prevent pdfkit run splitting
-      const withNbsp = processed.replace(/ /g, "\u00A0");
-      // Force align to center or left (avoid "right" which triggers RTL bidi)
-      const userAlign = options.align || "center";
-      const safeAlign = userAlign === "right" ? "center" : userAlign;
-      const opts: any = { lineBreak: false, ...options, align: safeAlign };
-      doc.font(fontToUse).text(withNbsp, x, y, opts);
+      // اكتشف إن كان النص عربياً نقياً (لا يحوي أرقاماً لاتينية أو أحرفاً
+      // لاتينية). في هذه الحالة يجب تفعيل `features: ["rtla"]` لضمان إعادة
+      // ترتيب BiDi الصحيح: pdfkit/fontkit بدون هذه الميزة يعرض الكلمات
+      // العربية بترتيب منطقي LTR، فيرى القارئ العربي الكلمة الثانية أولاً
+      // (مثلاً "إجازة رمز" بدلاً من "رمز الإجازة").
+      //
+      // Detect pure-Arabic text (no Latin digits or letters). In that case
+      // enable `features: ["rtla"]` to ensure proper BiDi reordering: without
+      // this feature, pdfkit/fontkit renders Arabic words in logical LTR
+      // order, so an Arabic RTL reader sees the second word first (e.g.
+      // "إجازة رمز" instead of "رمز الإجازة").
+      //
+      // للنصوص المختلطة (عربي + أرقام لاتينية أو أحرف لاتينية)، لا تستخدم
+      // `rtla` لأنها تعكس الأرقام وتكسر الأقواس — استخدم المقاربة بالمقاطع
+      // عبر renderVisualPieces بدلاً من ذلك.
+      // For mixed text (Arabic + Latin digits or letters), do NOT use `rtla`
+      // because it reverses digits and breaks brackets — use the piece-by-piece
+      // approach via renderVisualPieces instead.
+      const stripped = String(text).replace(/[\u200e\u200f\u200d\u200c]/g, "");
+      // عربي نقي = حروف عربية، مسافات، علامات ترقيم عربية، نقطتين، شرطة، أقواس عربية فقط
+      // Pure Arabic = only Arabic letters, spaces, Arabic punctuation, colon, dash, Arabic parens
+      const isPureArabic = /^[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\s\u060C\u061B\u061F\uFD3E\uFD3F:\-()/\\]*$/.test(stripped)
+        && /[\u0600-\u06FF]/.test(stripped)
+        && !/[0-9A-Za-z]/.test(stripped);
+
+      const opts: any = { align: "right", ...options };
+      if (useArabicFont && isPureArabic && !opts.features) {
+        opts.features = ["rtla"];
+      }
+      doc.font(fontToUse).text(text, x, y, opts);
     };
 
     const drawTextEn = (text: string, x: number, y: number, options: any = {}) => {
       const fontToUse = options.weight === "bold" ? fontEnBold : fontEnReg;
-      if (options.fontSize) doc.fontSize(options.fontSize);
       if (options.color) doc.fillColor(options.color);
       doc.font(fontToUse).text(text, x, y, options);
     };
 
     /**
-     * Render MIXED Arabic + Latin/digits text — mirrors Python's safe_arabic_mixed():
-     * same pipeline as processArabicText but the bidi algorithm correctly
-     * handles LTR runs (digits, Latin letters, brackets) within RTL context.
+     * عرض خلية نص مختلط عربي/إنجليزي مع الحفاظ على ترتيب BiDi الصحيح
+     * ومنع عكس أرقام التواريخ.
+     *
+     * السبب الجذري للمشكلة: عند تمرير `features: ["rtla"]` إلى pdfkit مع نص
+     * مختلط (عربي + أرقام لاتينية)، يعكس pdfkit ترتيب الأرقام داخل المقاطع
+     * الـ LTR (يظهر "20-09-2025" كـ "5202-90-02"). الحل: لا تستخدم `rtla`
+     * لهذه الخلية — تشكيل الحروف العربية يحدث افتراضياً عبر GSUB بدون الحاجة
+     * لهذه الميزة، وخوارزمية BiDi ستتعامل مع الترتيب البصري الصحيح.
+     *
+     * Root cause: when `features: ["rtla"]` is passed to pdfkit with mixed
+     * Arabic + Latin-digit text, pdfkit reverses digit order within LTR runs
+     * (showing "20-09-2025" as "5202-90-02"). Fix: don't use `rtla` for this
+     * cell — Arabic letter shaping happens via default GSUB without this feature,
+     * and pdfkit's BiDi handles the correct visual order.
+     *
+     * استخدم خط NotoSansArabic للنص بالكامل (يدعم الحروف العربية واللاتينية
+     * والأرقام) لتجنب مشاكل تموضع المقاطع المتعددة على خطوط منفصلة.
+     * Use NotoSansArabic font for the entire text (it supports Arabic letters,
+     * Latin letters, and digits) to avoid multi-segment positioning issues.
      */
-    const drawTextMixed = (text: string, x: number, y: number, options: any = {}) => {
-      const fontToUse = options.weight === "bold" ? fontArBold : fontArReg;
-      if (options.fontSize) doc.fontSize(options.fontSize);
-      if (options.color) doc.fillColor(options.color);
+    const renderMixedRtlCell = (opts: {
+      text: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      fontSize: number;
+      color: string;
+      weight?: "regular" | "bold";
+    }) => {
+      const { text, x, y, width, height, fontSize, color, weight = "regular" } = opts;
+      // أزل علامات التحكم غير المرئية (LRM/RLM/ZWJ/ZWNJ) لأن خط NotoSansArabic
+      // قد يعرضها كمربعات صغيرة. خوارزمية BiDi في pdfkit ستعالج الترتيب صحيحاً
+      // بدونها.
+      // Remove invisible format controls (LRM/RLM/ZWJ/ZWNJ) — NotoSansArabic
+      // may render them as small tofu boxes. pdfkit's BiDi handles order correctly
+      // without them.
+      const cleanText = text.replace(/[\u200e\u200f\u200d\u200c]/g, "");
+      if (!cleanText) return;
 
-      const processed = safeArabicMixed(text);
-      const opts: any = { align: "right", lineBreak: false, ...options };
-      doc.font(fontToUse).text(processed, x, y, opts);
+      const font = weight === "bold" ? fontArBold : fontArReg;
+      doc.font(font).fontSize(fontSize).fillColor(color);
+
+      // احسب ارتفاع السطر للتوسيط الرأسي
+      // Compute line height for vertical centering
+      const textH = doc.currentLineHeight(true);
+      const startY = y + (height - textH) / 2;
+
+      // اعرض النص بخط NotoSansArabic بدون `features: ["rtla"]` — التشكيل
+      // الافتراضي عبر GSUB يكفي للحروف العربية، وخوارزمية BiDi سترتب الأرقام
+      // والمقاطع اللاتينية في ترتيب LTR الصحيح داخل السياق RTL.
+      // Render the text with NotoSansArabic font WITHOUT `features: ["rtla"]`.
+      // Default GSUB shaping is sufficient for Arabic letters, and pdfkit's BiDi
+      // will order digits and Latin runs in correct LTR within the RTL context.
+      const useRtla = false;
+      const textOpts: any = {
+        width: width,
+        align: "center",
+        lineBreak: false,
+      };
+      if (useArabicFont && useRtla) {
+        textOpts.features = ["rtla"];
+      }
+      doc.text(cleanText, x, startY, textOpts);
     };
 
-    // ============================================================
-    // HEADER LOGOS — exact positions from reference PDF
-    // Seha:    x=31,  y=34, w=159
-    // Kingdom: x=283, y=37, w=266
-    // Geometric: x=541, y=34, w=266
-    // ============================================================
-    if (fs.existsSync(SEHA_LOGO)) doc.image(SEHA_LOGO, 31, 34, { width: 159 });
-    if (fs.existsSync(KINGDOM_TEXT)) doc.image(KINGDOM_TEXT, 283, 37, { width: 266 });
-    if (fs.existsSync(GEOMETRIC)) doc.image(GEOMETRIC, 541, 34, { width: 266 });
+    /**
+     * اعرض عدة مقاطع نصية في صف واحد بترتيب بصري (يسار→يمين على الشاشة)،
+     * كل مقطع بخطه الخاص. كل مقطع يجب أن يكون نقي الاتجاه (إما عربي فقط أو
+     * لاتيني فقط) لمنع خوارزمية BiDi في pdfkit من إعادة ترتيب الأحرف داخل
+     * المقطع.
+     *
+     * Renders multiple text pieces on a single line in VISUAL order
+     * (left-to-right on screen). Each piece MUST be pure-direction (either
+     * all-Arabic or all-Latin/digits) to prevent pdfkit's BiDi from
+     * reordering characters within a piece.
+     *
+     * المقاربة مطابقة لما يفعله بوت Python عبر دالة `render_mixed_font_cell_v2`
+     * — يبني النص بترتيب بصري محسوب يدوياً ثم يعرض كل مقطع بخطه المناسب
+     * (NotoSansArabic للعربي، Times-Roman للاتيني/الأرقام).
+     *
+     * This mirrors the Python bot's `render_mixed_font_cell_v2` approach —
+     * build the text in manually-computed visual order, then render each
+     * piece with the appropriate font (NotoSansArabic for Arabic,
+     * Times-Roman for Latin/digits).
+     *
+     * وضع المحاذاة الأفقي: 'center' (توسيط) أو 'right' (محاذاة لليمين).
+     * Horizontal alignment: 'center' or 'right'.
+     */
+    const renderVisualPieces = (opts: {
+      pieces: { text: string; font: any }[];
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      fontSize: number;
+      color: string;
+      align?: "center" | "right" | "left";
+    }) => {
+      const { pieces, x, y, width, height, fontSize, color, align = "center" } = opts;
+      if (pieces.length === 0) return;
 
-    // ============================================================
-    // TITLE — Arabic at y=152, English at y=192
-    // Arabic: NotoSansArabicBold, 22pt, #306db5
-    // English: Times-Bold, 18pt, #2c3e77
-    // ============================================================
-    drawTextAr("تقرير إجازة مرضية", 0, 152, {
+      // احسب عرض كل مقطع بالخط الخاص به
+      // Compute width of each piece using its own font
+      const widths = pieces.map((p) => {
+        doc.font(p.font).fontSize(fontSize);
+        return doc.widthOfString(p.text);
+      });
+      const totalWidth = widths.reduce((a, b) => a + b, 0);
+      if (totalWidth <= 0) return;
+
+      // احسب ارتفاع السطر لكل خط على حدة — مختلف الخطوط لها ascender/descender
+      // مختلفة، فمحاذاة كل مقطع يجب أن تُحسب بخطه الخاص لضمان baseline متطابق.
+      // Compute line height for each font separately — different fonts have
+      // different ascender/descender, so each piece's vertical placement must
+      // be computed with its own font to ensure identical baselines.
+      const pieceLineHeights = pieces.map((p) => {
+        doc.font(p.font).fontSize(fontSize);
+        return doc.currentLineHeight(true);
+      });
+      // استخدم أكبر ارتفاع لتوسيط الكتلة رأسياً ضمن الخلية
+      // Use the largest line height to vertically center the block in the cell
+      const maxTextH = Math.max(...pieceLineHeights);
+      const blockTop = y + (height - maxTextH) / 2;
+
+      // احسب الإزاحة الأفقية الابتدائية حسب المحاذاة
+      // Compute starting X offset based on alignment
+      let cursorX: number;
+      if (align === "center") {
+        cursorX = x + (width - totalWidth) / 2;
+      } else if (align === "right") {
+        cursorX = x + width - totalWidth;
+      } else {
+        cursorX = x;
+      }
+
+      // اعرض كل مقطع بإحداثياته المطلقة — لا تستخدم continued:true لأنه
+      // يفعّل BiDi على مستوى السطر كاملاً مما يعيد ترتيب المقاطع.
+      // كل مقطع يُحاذى رأسياً بخطه الخاص لضمان baseline موحّد.
+      // Render each piece at its absolute coordinates — do NOT use
+      // continued:true because it triggers line-level BiDi that reorders
+      // pieces. Each piece is vertically positioned with its own font to
+      // ensure a unified baseline.
+      for (let i = 0; i < pieces.length; i++) {
+        const piece = pieces[i];
+        const pieceLH = pieceLineHeights[i];
+        // محاذاة كل مقطع بحيث يتطابق baseline مع baseline أطول مقطع
+        // Align each piece so its baseline matches the baseline of the tallest piece
+        const pieceY = blockTop + (maxTextH - pieceLH) / 2;
+        doc.font(piece.font).fillColor(color).fontSize(fontSize);
+        // lineBreak: false يمنع لف النص إلى سطر جديد (كل البيانات في سطر واحد)
+        // lineBreak: false prevents wrapping (all data on one line)
+        doc.text(piece.text, cursorX, pieceY, { lineBreak: false });
+        cursorX += widths[i];
+      }
+    };
+
+    // --- Header: three logos ---
+    // الشعار الأيسر: شعار منصة صحة (ثابت)
+    // Left logo: SEHA platform logo (static)
+    if (fs.existsSync(SEHA_LOGO)) doc.image(SEHA_LOGO, 40, 40, { width: 150 });
+    // الشعار الأوسط: نص المملكة العربية السعودية (ثابت)
+    // Center logo: Kingdom of Saudi Arabia text (static)
+    if (fs.existsSync(KINGDOM_TEXT)) doc.image(KINGDOM_TEXT, (pageWidth - 180) / 2, 70, { width: 180, align: "center" });
+    // الشعار الأيمن: الشعار الافتراضي (geometric-shape) دائماً.
+    // الشعار المرفوع يظهر في التذييل فقط فوق اسم المنشأة كما طلب المستخدم.
+    // Right logo: default geometric shape always.
+    // The uploaded logo appears in the footer only, above the hospital name, per user request.
+    if (fs.existsSync(GEOMETRIC)) {
+      doc.image(GEOMETRIC, pageWidth - 180, 40, { width: 170 });
+    }
+
+    doc.moveDown(9);
+
+    // --- Title ---
+    doc.fillColor("#306db5");
+    drawTextAr("تقرير إجازة مرضية", 0, doc.y, {
       align: "center",
       weight: "bold",
       fontSize: 22,
-      color: COLOR_TITLE_AR,
       width: pageWidth,
     });
-    drawTextEn("Sick Leave Report", 0, 192, {
-      align: "center",
-      weight: "bold",
-      fontSize: 18,
-      color: COLOR_TITLE_EN,
-      width: pageWidth,
-    });
+    doc.moveDown(0.1);
+    doc
+      .font(fontEnBold)
+      .fillColor("#2c3e77")
+      .fontSize(19)
+      .text("Sick Leave Report", 0, doc.y, { align: "center", width: pageWidth });
+    doc.moveDown(1.5);
 
-    // ============================================================
-    // TABLE — 4 columns, 11 rows, fixed height 42.5pt
-    // Column X boundaries: 35, 200, 435, 670, 806
-    // Column widths:       165, 235, 235, 136
-    // Row Y boundaries:    241, 283.5, 326, 368.5, 411, 453.5,
-    //                      496, 538.5, 581, 623.5, 666, 708.5
-    // Border: #d9d9d9, width 1.4
-    // Font size: 13pt for all cells
-    // ============================================================
-    const COL_X = [35, 200, 435, 670, 806];
-    const COL_W = [COL_X[1] - COL_X[0], COL_X[2] - COL_X[1], COL_X[3] - COL_X[2], COL_X[4] - COL_X[3]];
-    const TABLE_LEFT = COL_X[0];
-    const TABLE_RIGHT = COL_X[4];
-    const TABLE_WIDTH = TABLE_RIGHT - TABLE_LEFT;
-    const ROW_H = 42.5;
-    const TABLE_TOP = 241;
-    const CELL_FONT_SIZE = 13;
-    const BORDER_WIDTH = 1.4;
+    // --- Table ---
+    const startX = 40;
+    const startY = 250;
+    const col1W = 160;
+    const col3W = 160;
+    const tableWidth = 760;
+    const col2W = tableWidth - col1W - col3W;
+    let currentY = startY;
 
-    let currentY = TABLE_TOP;
-
-    /**
-     * Draw a single 4-column row with fixed height and proper borders.
-     * Layout: [En label | En value | Ar value | Ar label]
-     */
     const drawRow = (
       labelEn: string,
-      valueEn: string,
-      valueAr: string,
+      value: string | { en: string; ar: string },
       labelAr: string,
+      isDoubleValue = false,
       bgColor: string | null = null,
-      textColor: string = COLOR_VALUE_DARK,
-      labelColor: string = COLOR_LABEL,
     ) => {
-      const y = currentY;
+      const labelFontSize = 14;
+      const valueFontSize = 14;
+      const padding = 15;
+
+      doc.font(fontEnReg).fontSize(valueFontSize);
+      let maxTextHeight = 0;
+
+      if (isDoubleValue && typeof value === "object") {
+        const subColW = col2W / 2;
+        const h1 = doc.heightOfString(value.en || "-", { width: subColW - 20 });
+        doc.font(fontArReg);
+        const h2 = doc.heightOfString(value.ar || "-", { width: subColW - 20 });
+        maxTextHeight = Math.max(h1, h2);
+      } else {
+        maxTextHeight = doc.heightOfString((value as string) || "-", { width: col2W - 20 });
+      }
+
+      doc.font(fontEnBold).fontSize(labelFontSize);
+      const labelH1 = doc.heightOfString(labelEn, { width: col1W - 20 });
+      doc.font(fontArBold).fontSize(labelFontSize);
+      const labelH2 = doc.heightOfString(labelAr, { width: col3W - 20 });
+      maxTextHeight = Math.max(maxTextHeight, labelH1, labelH2);
+
+      const dynamicRowH = Math.max(40, maxTextHeight + padding);
 
       if (bgColor) {
         doc.save();
-        doc.rect(TABLE_LEFT, y, TABLE_WIDTH, ROW_H).fill(bgColor);
+        doc.rect(startX, currentY, tableWidth, dynamicRowH).fill(bgColor);
         doc.restore();
       }
 
-      doc.lineWidth(BORDER_WIDTH).strokeColor(COLOR_BORDER);
-      doc.rect(TABLE_LEFT, y, TABLE_WIDTH, ROW_H).stroke();
-      doc.moveTo(COL_X[1], y).lineTo(COL_X[1], y + ROW_H).stroke();
-      doc.moveTo(COL_X[2], y).lineTo(COL_X[2], y + ROW_H).stroke();
-      doc.moveTo(COL_X[3], y).lineTo(COL_X[3], y + ROW_H).stroke();
+      doc.rect(startX, currentY, tableWidth, dynamicRowH).strokeColor("#e0e0e0").stroke();
+      doc.moveTo(startX + col1W, currentY).lineTo(startX + col1W, currentY + dynamicRowH).stroke();
+      doc.moveTo(startX + col1W + col2W, currentY).lineTo(startX + col1W + col2W, currentY + dynamicRowH).stroke();
 
-      // --- Col 1: English label (centered) ---
-      doc.font(fontEnBold).fontSize(CELL_FONT_SIZE).fillColor(labelColor);
-      const lblEnH = doc.heightOfString(labelEn, { width: COL_W[0] - 20 });
-      const lblEnY = y + (ROW_H - lblEnH) / 2;
-      drawTextEn(labelEn, COL_X[0] + 10, lblEnY, {
-        width: COL_W[0] - 20,
+      doc.font(fontEnBold).fontSize(labelFontSize);
+      const lH1 = doc.heightOfString(labelEn, { width: col1W - 30 });
+      const y1 = currentY + (dynamicRowH - lH1) / 2;
+      doc.font(fontArBold).fontSize(labelFontSize);
+      const lH2 = doc.heightOfString(labelAr, { width: col3W - 30 });
+      const y2 = currentY + (dynamicRowH - lH2) / 2;
+
+      drawTextEn(labelEn, startX + 15, y1, {
+        width: col1W - 30,
         align: "center",
         weight: "bold",
-        fontSize: CELL_FONT_SIZE,
-        color: labelColor,
+        fontSize: labelFontSize,
+        color: "#2b5d88",
       });
-
-      // --- Col 2: English value (centered) ---
-      doc.font(fontEnReg).fontSize(CELL_FONT_SIZE).fillColor(textColor);
-      const valEnH = doc.heightOfString(valueEn || "-", { width: COL_W[1] - 20 });
-      const valEnY = y + (ROW_H - valEnH) / 2;
-      drawTextEn(valueEn || "-", COL_X[1] + 10, valEnY, {
-        width: COL_W[1] - 20,
+      drawTextAr(labelAr, startX + col1W + col2W + 15, y2, {
+        width: col3W - 30,
         align: "center",
-        fontSize: CELL_FONT_SIZE,
-        color: textColor,
+        weight: "bold",
+        fontSize: labelFontSize,
+        color: "#2b5d88",
       });
 
-      // --- Col 3: Arabic value (centered) ---
-      // Use Arabic font + reshape + bidi for Arabic text.
-      // For dates and IDs (Latin digits only), use Times-Roman directly.
-      const cleanArText = String(valueAr || "").replace(/[^0-9A-Za-z\-/]/g, "").trim();
-      const isArValueLatinOnly = cleanArText.length > 0 && /^[0-9A-Za-z\-/]+$/.test(cleanArText);
+      if (isDoubleValue && typeof value === "object") {
+        const subColW = col2W / 2;
+        doc.moveTo(startX + col1W + subColW, currentY).lineTo(startX + col1W + subColW, currentY + dynamicRowH).strokeColor("#e0e0e0").stroke();
 
-      if (isArValueLatinOnly) {
-        // Value is Latin digits/letters (date, ID) — use Times-Roman
-        doc.font(fontEnReg).fontSize(CELL_FONT_SIZE).fillColor(textColor);
-        const valArH = doc.heightOfString(valueAr || "-", { width: COL_W[2] - 20 });
-        const valArY = y + (ROW_H - valArH) / 2;
-        drawTextEn(valueAr || "-", COL_X[2] + 10, valArY, {
-          width: COL_W[2] - 20,
+        doc.font(fontEnReg).fontSize(valueFontSize);
+        const vH1 = doc.heightOfString(value.en || "-", { width: subColW - 30 });
+        const vy1 = currentY + (dynamicRowH - vH1) / 2;
+        drawTextEn(value.en || "-", startX + col1W + 15, vy1, {
+          width: subColW - 30,
           align: "center",
-          fontSize: CELL_FONT_SIZE,
-          color: textColor,
+          fontSize: valueFontSize,
+          color: "#29396e",
         });
-      } else {
-        // Value contains Arabic — use NotoSansArabic + reshape + bidi
-        // Replace spaces with NBSP to prevent pdfkit run splitting
-        doc.font(fontArReg).fontSize(CELL_FONT_SIZE).fillColor(textColor);
-        const processed = processArabicText(valueAr || "");
-        const withNbsp = processed.replace(/ /g, "\u00A0");
-        const valArH = doc.heightOfString(withNbsp || "-", { width: COL_W[2] - 20 });
-        const valArY = y + (ROW_H - valArH) / 2;
-        if (withNbsp) {
-          doc.text(withNbsp, COL_X[2] + 10, valArY, {
-            width: COL_W[2] - 20,
+
+        const arText = value.ar || "-";
+        const cleanText = String(arText).replace(/[^0-9\-/]/g, "").trim();
+        let isDate = false;
+        let vH2 = 0;
+        if (cleanText.length > 0 && /^[0-9\-/]+$/.test(cleanText)) {
+          isDate = true;
+          doc.font(fontEnReg).fontSize(valueFontSize);
+          vH2 = doc.heightOfString(cleanText, { width: subColW - 30 });
+        } else {
+          doc.font(fontArReg).fontSize(valueFontSize);
+          vH2 = doc.heightOfString(arText, { width: subColW - 30 });
+        }
+        const vy2 = currentY + (dynamicRowH - vH2) / 2;
+        if (isDate) {
+          drawTextEn(cleanText, startX + col1W + subColW + 15, vy2, {
+            width: subColW - 30,
             align: "center",
-            lineBreak: false,
+            fontSize: valueFontSize,
+            color: "#29396e",
+          });
+        } else {
+          drawTextAr(arText, startX + col1W + subColW + 15, vy2, {
+            width: subColW - 30,
+            align: "center",
+            fontSize: valueFontSize,
+            color: "#29396e",
           });
         }
+      } else {
+        doc.font(fontEnReg).fontSize(valueFontSize);
+        const vH = doc.heightOfString((value as string) || "-", { width: col2W - 30 });
+        const vY = currentY + (dynamicRowH - vH) / 2;
+        drawTextEn((value as string) || "-", startX + col1W + 15, vY, {
+          width: col2W - 30,
+          align: "center",
+          fontSize: valueFontSize,
+          color: "#29396e",
+        });
       }
 
-      // --- Col 4: Arabic label (centered, bold) ---
-      doc.font(fontArBold).fontSize(CELL_FONT_SIZE).fillColor(labelColor);
-      const processedLbl = processArabicText(labelAr);
-      const lblArH = doc.heightOfString(processedLbl, { width: COL_W[3] - 20 });
-      const lblArY = y + (ROW_H - lblArH) / 2;
-      drawTextAr(labelAr, COL_X[3] + 10, lblArY, {
-        width: COL_W[3] - 20,
-        align: "center",
-        weight: "bold",
-        fontSize: CELL_FONT_SIZE,
-        color: labelColor,
-      });
-
-      currentY += ROW_H;
+      currentY += dynamicRowH;
     };
 
-    // --- Row 1: Leave ID (white bg) ---
-    drawRow("Leave ID", payload.leaveNumber, payload.leaveNumber, "رمز الإجازة");
+    const startDateFormatted = normalizeDateToDDMMYYYY(payload.entryDate);
+    const endDateFormatted = normalizeDateToDDMMYYYY(payload.exitDate);
 
-    // --- Row 2: Leave Duration (dark navy bg #2b3d77, white text) ---
-    {
-      const y = currentY;
-      const startDateFormatted = normalizeDateToDDMMYYYY(payload.entryDate);
-      const endDateFormatted = normalizeDateToDDMMYYYY(payload.exitDate);
+    const getArabicDuration = (count: number) => {
+      // صيغة البوت: الكلمة العربية أولاً ثم الرقم (مطابق لإخراج بوت Python).
+      // هذا التنسيق يضمن تشكيلاً عربياً صحيحاً متصلاً ويطابق إخراج البوت
+      // الذي استخدم `arabic_reshaper + python-bidi` بنجاح في الإنتاج.
+      // Bot's format: Arabic word first, then the digit. This matches the
+      // Python bot's output and ensures proper Arabic letter shaping.
+      if (count === 0) return "يوم 0";
+      if (count === 1) return "يوم 1";
+      if (count === 2) return "يومان 2";
+      if (count >= 3 && count <= 10) return `أيام ${count}`;
+      return `يوم ${count}`;
+    };
 
-      // Arabic duration word — always use "يوم" after the number
-      // (no "يومان" or "أيام") and put the number first (right side in RTL)
-      const getArabicDuration = (count: number) => {
-        return `${count} يوم`;
-      };
-      const durText = getArabicDuration(payload.dayCount);
-      const enDuration = `${payload.dayCount} day ( ${startDateFormatted} to ${endDateFormatted} )`;
+    const durText = getArabicDuration(payload.dayCount);
+    // أزل "(s)" بعد كلمة day بناءً على طلب المستخدم — أصبحت "day" فقط.
+    // أضف مسافة قبل القوس المفتوح وبعد القوس المغلق لمطابقة التنسيق المرجعي.
+    // Removed the "(s)" after "day" per user request — now just "day".
+    // Added space before "(" and after ")" to match reference format.
+    const duration = `${payload.dayCount} day ( ${startDateFormatted} to ${endDateFormatted} )`;
 
-      // Convert DD-MM-YYYY to YYYY-MM-DD for Arabic version (matches Python bot)
-      const toArabicDate = (ddmmyyyy: string) => {
-        const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(ddmmyyyy);
-        if (m) return `${m[3]}-${m[2]}-${m[1]}`;
-        return ddmmyyyy;
-      };
-      const startDateAr = toArabicDate(startDateFormatted);
-      const endDateAr = toArabicDate(endDateFormatted);
-      const arDuration = `${durText} ( ${startDateAr} إلى ${endDateAr} )`;
+    drawRow("Leave ID", payload.leaveNumber, "رمز الإجازة");
 
-      // Fill background #2b3d77
-      doc.save();
-      doc.rect(TABLE_LEFT, y, TABLE_WIDTH, ROW_H).fill(COLOR_DURATION_BG);
-      doc.restore();
+    // Row 2: Duration
+    const rowH = 45;
+    const durFontSize = 13;
 
-      // Borders
-      doc.lineWidth(BORDER_WIDTH).strokeColor(COLOR_BORDER);
-      doc.rect(TABLE_LEFT, y, TABLE_WIDTH, ROW_H).stroke();
-      doc.moveTo(COL_X[1], y).lineTo(COL_X[1], y + ROW_H).stroke();
-      doc.moveTo(COL_X[2], y).lineTo(COL_X[2], y + ROW_H).stroke();
-      doc.moveTo(COL_X[3], y).lineTo(COL_X[3], y + ROW_H).stroke();
+    doc.save();
+    doc.rect(startX, currentY, tableWidth, rowH).fill("#2c3e77");
 
-      // Col 1: "Leave Duration" (Times-Bold, white)
-      doc.font(fontEnBold).fontSize(CELL_FONT_SIZE).fillColor(COLOR_WHITE);
-      const lblEnH = doc.heightOfString("Leave Duration", { width: COL_W[0] - 20 });
-      const lblEnY = y + (ROW_H - lblEnH) / 2;
-      drawTextEn("Leave Duration", COL_X[0] + 10, lblEnY, {
-        width: COL_W[0] - 20,
-        align: "center",
-        weight: "bold",
-        fontSize: CELL_FONT_SIZE,
-        color: COLOR_WHITE,
-      });
+    doc.font(fontEnBold).fontSize(durFontSize);
+    const durLabelH1 = doc.heightOfString("Leave Duration", { width: col1W - 30 });
+    const durY1 = currentY + (rowH - durLabelH1) / 2;
+    doc.font(fontArBold).fontSize(durFontSize);
+    const durLabelH2 = doc.heightOfString("مدة الإجازة", { width: col3W - 30 });
+    const durY2 = currentY + (rowH - durLabelH2) / 2;
 
-      // Col 2: English duration value (Times-Roman, white)
-      let enFontSize = CELL_FONT_SIZE;
-      for (let fs = enFontSize; fs >= 9; fs--) {
-        doc.font(fontEnReg).fontSize(fs);
-        if (doc.widthOfString(enDuration) <= COL_W[1] - 20) {
-          enFontSize = fs;
-          break;
-        }
-        if (fs === 9) { enFontSize = 9; break; }
+    drawTextEn("Leave Duration", startX + 15, durY1, {
+      width: col1W - 30,
+      align: "center",
+      weight: "bold",
+      fontSize: durFontSize,
+      color: "#ffffff",
+    });
+    drawTextAr("مدة الإجازة", startX + col1W + col2W + 15, durY2, {
+      width: col3W - 30,
+      align: "center",
+      weight: "bold",
+      fontSize: durFontSize,
+      color: "#ffffff",
+    });
+
+    const subColW = col2W / 2;
+    doc.moveTo(startX + col1W, currentY).lineTo(startX + col1W, currentY + rowH).strokeColor("#ffffff").stroke();
+    doc.moveTo(startX + col1W + subColW, currentY).lineTo(startX + col1W + subColW, currentY + rowH).stroke();
+    doc.moveTo(startX + col1W + col2W, currentY).lineTo(startX + col1W + col2W, currentY + rowH).stroke();
+
+    doc.font(fontEnReg).fontSize(durFontSize - 1);
+    const durValH1 = doc.heightOfString(duration, { width: subColW - 20 });
+    const durValY1 = currentY + (rowH - durValH1) / 2;
+    drawTextEn(duration, startX + col1W + 10, durValY1, {
+      width: subColW - 20,
+      align: "center",
+      fontSize: durFontSize - 1,
+      color: "#ffffff",
+    });
+
+    // عرض خلية المدة العربية — نهج النص الواحد المطابق لإخراج بوت Python.
+    //
+    // البوت يبني النص المنطقي: `يوم 1 (date1 إلى date2)` ثم يطبّق
+    // arabic_reshaper + python-bidi. في Node.js، pdfkit/fontkit يقومان
+    // بالتشكيل و BiDi تلقائياً عبر HarfBuzz.
+    //
+    // اكتشفنا (عبر اختبارات بصرية) أن:
+    // 1. `features: ["rtla"]` تكسر الأرقام والأقواس — يجب عدم استخدامها.
+    // 2. بدء النص بحرف عربي (وليس رقم) ضروري لتشكيل عربي صحيح متصل.
+    // 3. صيغة البوت `يوم 1 (...)` تنتج أحرفاً متصلة وأرقاماً صحيحة.
+    //
+    // Render the Arabic duration cell — single-text approach mirroring the
+    // Python bot's output. pdfkit/fontkit handle shaping and BiDi via
+    // HarfBuzz automatically. Key findings from visual tests:
+    // 1. `features: ["rtla"]` breaks digits and brackets — must NOT use.
+    // 2. Starting the text with an Arabic letter (not a digit) is required
+    //    for proper Arabic letter shaping (connected forms).
+    // 3. Bot's format `يوم 1 (...)` produces connected letters and correct
+    //    digit order.
+    const toArabicDate = (ddmmyyyy: string) => {
+      // حوّل DD-MM-YYYY إلى YYYY-MM-DD لمطابقة التنسيق المطلوب
+      // Convert DD-MM-YYYY to YYYY-MM-DD to match required format
+      const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(ddmmyyyy);
+      if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+      return ddmmyyyy;
+    };
+    const startDateAr = toArabicDate(startDateFormatted);
+    const endDateAr = toArabicDate(endDateFormatted);
+
+    // النص المنطقي الكامل بخط NotoSansArabic (يدعم العربي واللاتيني والأرقام).
+    // صيغة البوت: كلمة العربية أولاً ثم الرقم ثم التواريخ بين قوسين.
+    // Full logical text in NotoSansArabic font (supports Arabic, Latin, digits).
+    // Bot's format: Arabic word first, then number, then dates in parens.
+    const arabicDurationText = `${durText} ( ${startDateAr} إلى ${endDateAr} )`;
+
+    // تصغير الخط تلقائياً إن كان النص أعرض من الخلية لمنع الالتفاف لسطر ثانٍ.
+    // ابدأ بـ durFontSize-1 وانزل حتى 9 إن لزم.
+    // Auto-shrink font size if text is wider than the cell to prevent wrapping
+    // to a second line. Start at durFontSize-1, go down to 9 if needed.
+    const cellWidth = subColW - 20;
+    let durActualFontSize = durFontSize - 1;
+    for (let fs = durActualFontSize; fs >= 9; fs--) {
+      doc.font(fontArReg).fontSize(fs);
+      const w = doc.widthOfString(arabicDurationText);
+      if (w <= cellWidth) {
+        durActualFontSize = fs;
+        break;
       }
-      doc.font(fontEnReg).fontSize(enFontSize).fillColor(COLOR_WHITE);
-      const valEnH = doc.heightOfString(enDuration, { width: COL_W[1] - 20 });
-      const valEnY = y + (ROW_H - valEnH) / 2;
-      drawTextEn(enDuration, COL_X[1] + 10, valEnY, {
-        width: COL_W[1] - 20,
-        align: "center",
-        fontSize: enFontSize,
-        color: COLOR_WHITE,
-      });
-
-      // Col 3: Arabic duration value (mixed Arabic + digits) — use safeArabicMixed
-      // Replace spaces with NBSP to prevent pdfkit run splitting
-      let arFontSize = CELL_FONT_SIZE;
-      const processedArDuration = safeArabicMixed(arDuration);
-      const arDurationNbsp = processedArDuration.replace(/ /g, "\u00A0");
-      for (let fs = arFontSize; fs >= 9; fs--) {
-        doc.font(fontArReg).fontSize(fs);
-        if (doc.widthOfString(arDurationNbsp) <= COL_W[2] - 20) {
-          arFontSize = fs;
-          break;
-        }
-        if (fs === 9) { arFontSize = 9; break; }
+      if (fs === 9) {
+        durActualFontSize = 9;
+        break;
       }
-      doc.font(fontArReg).fontSize(arFontSize).fillColor(COLOR_WHITE);
-      const valArH = doc.currentLineHeight(true);
-      const valArY = y + (ROW_H - valArH) / 2;
-      doc.text(arDurationNbsp, COL_X[2] + 10, valArY, {
-        width: COL_W[2] - 20,
-        align: "center",
-        lineBreak: false,
-      });
-
-      // Col 4: "مدة الإجازة" (NotoSansArabicBold, white)
-      doc.font(fontArBold).fontSize(CELL_FONT_SIZE).fillColor(COLOR_WHITE);
-      const lblArH = doc.heightOfString(processArabicText("مدة الإجازة"), { width: COL_W[3] - 20 });
-      const lblArY = y + (ROW_H - lblArH) / 2;
-      drawTextAr("مدة الإجازة", COL_X[3] + 10, lblArY, {
-        width: COL_W[3] - 20,
-        align: "center",
-        weight: "bold",
-        fontSize: CELL_FONT_SIZE,
-        color: COLOR_WHITE,
-      });
-
-      currentY += ROW_H;
     }
 
-    // --- Row 3: Admission Date (white bg) ---
-    {
-      const startDateFormatted = normalizeDateToDDMMYYYY(payload.entryDate);
-      drawRow("Admission Date", startDateFormatted, startDateFormatted, "تاريخ الدخول");
-    }
+    doc.font(fontArReg).fontSize(durActualFontSize).fillColor("#ffffff");
+    // احسب ارتفاع السطر للتوسيط الرأسي
+    // Compute line height for vertical centering
+    const durTextH = doc.currentLineHeight(true);
+    const durTextY = currentY + (rowH - durTextH) / 2;
+    doc.text(arabicDurationText, startX + col1W + subColW + 10, durTextY, {
+      width: cellWidth,
+      align: "center",
+      lineBreak: false,
+    });
 
-    // --- Row 4: Discharge Date (light grey bg #f6f6f6) ---
-    {
-      const endDateFormatted = normalizeDateToDDMMYYYY(payload.exitDate);
-      drawRow("Discharge Date", endDateFormatted, endDateFormatted, "تاريخ الخروج", COLOR_ALT_ROW_BG);
-    }
+    doc.restore();
+    currentY += rowH;
 
-    // --- Row 5: Issue Date (white bg) ---
-    {
-      const issueDate = normalizeDateToDDMMYYYY(payload.entryDate);
-      drawRow("Issue Date", issueDate, issueDate, "تاريخ إصدار التقرير");
-    }
+    drawRow("Admission Date", { en: startDateFormatted, ar: startDateFormatted }, "تاريخ الدخول", true, "#f7f7f7");
+    drawRow("Discharge Date", { en: endDateFormatted, ar: endDateFormatted }, "تاريخ الخروج", true);
+    drawRow("Issue Date", startDateFormatted, "تاريخ إصدار التقرير");
+    drawRow("Name", { en: payload.nameEn, ar: payload.name }, "الاسم", true, "#f7f7f7");
+    drawRow("National ID / Iqama", payload.idNumber, "رقم الهوية / الإقامة");
+    drawRow("Nationality", { en: payload.nationalityEn, ar: payload.nationality }, "الجنسية", true, "#f7f7f7");
 
-    // --- Row 6: Name (light grey bg) ---
-    drawRow("Name", payload.nameEn || "-", payload.name || "-", "الاسم", COLOR_ALT_ROW_BG);
-
-    // --- Row 7: National ID / Iqama (white bg) ---
-    drawRow("National ID / Iqama", payload.idNumber, payload.idNumber, "رقم الهوية / الإقامة");
-
-    // --- Row 8: Nationality (light grey bg) ---
-    drawRow("Nationality", payload.nationalityEn || "-", payload.nationality || "-", "الجنسية", COLOR_ALT_ROW_BG);
-
-    // --- Row 9: Employer (white bg) ---
     const emptyIndicators = new Set(["", "غير محدد", "فارغ", "-", "None", "none", "null", "NULL", "Not Specified", "N/A", "n/a", "undefined"]);
     const employerAr = emptyIndicators.has((payload.employer || "").trim()) ? " " : payload.employer;
     const employerEn = emptyIndicators.has((payload.employerEn || "").trim()) ? " " : payload.employerEn;
-    drawRow("Employer", employerEn || " ", employerAr || " ", "جهة العمل");
+    drawRow("Employer", { en: employerEn, ar: employerAr }, "جهة العمل", true, "#f7f7f7");
 
-    // --- Row 10: Practitioner Name (light grey bg) ---
-    drawRow("Practitioner Name", payload.doctorEn || "-", payload.doctor || "-", "اسم الممارس", COLOR_ALT_ROW_BG);
+    drawRow("Practitioner Name", { en: payload.doctorEn, ar: payload.doctor }, "اسم الممارس", true, "#f7f7f7");
+    drawRow("Position", { en: payload.jobTitleEn, ar: payload.jobTitle }, "المسمى الوظيفي", true);
 
-    // --- Row 11: Position (white bg) ---
-    drawRow("Position", payload.jobTitleEn || "-", payload.jobTitle || "-", "المسمى الوظيفي");
+    // --- Footer ---
+    const footerY = pageHeight - 400;
+    const centerX = pageWidth / 2;
+    doc.moveTo(centerX, footerY).lineTo(centerX, footerY + 150).strokeColor("#e0e0e0").stroke();
 
-    // ============================================================
-    // FOOTER — divider at x=435
-    // Left half (35..435):  QR code + verification text + URL link
-    // Right half (435..806): Hospital logo + Arabic name + English name + license
-    // ============================================================
-    const FOOTER_DIVIDER_X = 435;
-    const FOOTER_TOP = 714;
-    const FOOTER_BOTTOM = 950;
-
-    // Vertical divider line
-    doc.lineWidth(BORDER_WIDTH).strokeColor(COLOR_BORDER);
-    doc.moveTo(FOOTER_DIVIDER_X, FOOTER_TOP).lineTo(FOOTER_DIVIDER_X, FOOTER_BOTTOM).stroke();
-
-    // --- LEFT HALF: QR code + verification text ---
-    // Build TWO URLs:
-    //   - qrUrl: the short inquiry URL (no query params) — encoded into the QR
-    //     code so scanning it just opens the inquiry page (matching the user's
-    //     request: "الباركود عن مسحه يطلع يكون هذا الرابط حق الاستعلامات
-    //     https://almoqeesehh.vercel.app/inquiries/slenquiry")
-    //   - clickUrl: the inquiry URL WITH gsl+id params — used for clickable
-    //     links inside the PDF so clicking them pre-fills the form and runs
-    //     the query automatically
-    const qrUrl = "https://almoqeesehh.vercel.app/inquiries/slenquiry";
-    const clickUrl = `${qrUrl}?gsl=${encodeURIComponent(payload.leaveNumber)}&id=${encodeURIComponent(payload.idNumber)}`;
-
-    // QR code at x=170, y=743, width=119
-    // QR data contains the short inquiry URL (so scanning it opens the
-    // inquiry page), matching the user's request:
-    // "الباركود عن مسحه يطلع يكون هذا الرابط حق الاستعلامات"
+    const leftCenterX = centerX / 2;
     try {
-      const qrImage = await QRCode.toDataURL(qrUrl, { width: 470, margin: 0 });
-      doc.image(qrImage, 170, 743, { width: 119 });
-      // Make the QR code itself clickable in the PDF — opens the inquiry
-      // page (with gsl+id pre-filled so the query runs automatically)
-      doc.link(170, 743, 119, 119, clickUrl);
+      const qrData = `Check Report: ${payload.leaveNumber}`;
+      const qrImage = await QRCode.toDataURL(qrData);
+      doc.image(qrImage, leftCenterX - 20, footerY, { width: 100 });
     } catch (e) {
       // ignore QR errors
     }
 
-    // Arabic verification text — two lines
     drawTextAr(
-      "للتحقق من بيانات التقرير يرجى التأكد من زيارة موقع منصة صحة",
-      35,
-      871,
-      {
-        width: 400,
-        align: "center",
-        weight: "bold",
-        fontSize: 10,
-        color: COLOR_BLACK,
-      },
+      "للتحقق من بيانات التقرير يرجى التأكد من زيارة موقع منصة صحة الرسمي",
+      leftCenterX - 125,
+      footerY + 110,
+      { width: 300, align: "center", weight: "bold", fontSize: 10, color: "#000000" },
     );
-    drawTextAr(
-      "الرسمي",
-      35,
-      888,
-      {
-        width: 400,
-        align: "center",
-        weight: "bold",
-        fontSize: 10,
-        color: COLOR_BLACK,
-      },
-    );
-
-    // English verification text (size 9, Times-Bold)
-    drawTextEn(
-      "To check the report please visit Seha's official website",
-      35,
-      909,
-      {
-        width: 400,
-        align: "center",
-        weight: "bold",
-        fontSize: 9,
-        color: COLOR_BLACK,
-      },
-    );
-
-    // URL link (size 11, Times-Bold, blue #0000ff, underlined)
-    // Display the short inquiry URL as the visible text (matching the
-    // user's request to show "https://almoqeesehh.vercel.app/inquiries/slenquiry"
-    // in the PDF) but link it to clickUrl (which has gsl+id params) so
-    // clicking it pre-fills the form and runs the query automatically.
-    // Also add an explicit `doc.link()` rectangle over the whole line so
-    // the link works reliably in every PDF viewer.
-    doc.fillColor(COLOR_LINK).font(fontEnBold).fontSize(11);
-    doc.text(qrUrl, 35, 924, {
-      width: 400,
+    drawTextEn("To check the report please visit Seha's official website", leftCenterX - 100, footerY + 150, {
+      width: 250,
       align: "center",
-      link: clickUrl,
+      weight: "bold",
+      fontSize: 10,
+      color: "#000000",
+    });
+
+    doc.fillColor("blue").font(fontEnBold).fontSize(9);
+    doc.text("www.seha.sa/#/inquiries/slenquiry", leftCenterX - 110, footerY + 180, {
+      width: 250,
+      align: "center",
+      link: "https://www.seha.sa/#/inquiries/slenquiry",
       underline: true,
     });
-    // Explicit link rectangle over the entire URL line area — guarantees
-    // clickability even in PDF viewers that ignore the text-run link option
-    doc.link(35, 924, 400, 18, clickUrl);
 
-    // --- RIGHT HALF: Hospital logo + name + license ---
-    // Hospital logo at x=575, y=746, width=122
+    const rightCenterX = centerX + centerX / 2;
+
+    // شعار المنشأة في التذييل: يُعرض فوق اسم المنشأة إن رُفع شعار من المستخدم
+    // Footer facility logo: shown above the hospital name when user uploaded one
     if (uploadedLogoBuffer) {
+      // ضع الشعار في صندوق 90×90 فوق اسم المنشأة
+      // Place logo in a 90x90 box above the hospital name
+      const logoBoxW = 90;
+      const logoBoxH = 90;
+      const logoX = rightCenterX - logoBoxW / 2;
+      const logoY = footerY;
       try {
-        doc.image(uploadedLogoBuffer, 575, 746, { width: 122 });
+        doc.image(uploadedLogoBuffer, logoX, logoY, { fit: [logoBoxW, logoBoxH], align: "center", valign: "center" });
       } catch {
-        // ignore image errors
+        // تجاهل أخطاء الصور
       }
     }
 
-    // Arabic hospital name at y=866 (size 12, NotoSansArabicBold, black)
-    drawTextAr(
-      payload.hospitalName || "",
-      435,
-      866,
-      {
-        width: 371,
-        align: "center",
-        weight: "bold",
-        fontSize: 12,
-        color: COLOR_BLACK,
-      },
-    );
+    // تخطيط اسم المنشأة في التذييل — مطابق للتنسيق المرجعي:
+    // - الاسم العربي في السطر الأول
+    // - الاسم الإنجليزي في السطر الثاني (دائماً في سطر مستقل)
+    // - رقم الترخيص (إن وُجد) في السطر الثالث
+    //
+    // Footer hospital name layout — matches reference format:
+    // - Arabic name on line 1
+    // - English name on line 2 (always on its own line)
+    // - License number (if any) on line 3
+    drawTextAr(payload.hospitalName || "", rightCenterX - 125, footerY + 100, {
+      width: 250,
+      align: "center",
+      weight: "bold",
+      fontSize: 12,
+      color: "#000000",
+    });
+    drawTextEn(payload.hospitalNameEn || "", rightCenterX - 125, footerY + 130, {
+      width: 250,
+      align: "center",
+      weight: "bold",
+      fontSize: 12,
+      color: "#000000",
+    });
 
-    // English hospital name at y=898 (size 12, Times-Bold, black)
-    drawTextEn(
-      payload.hospitalNameEn || "",
-      435,
-      898,
-      {
-        width: 371,
-        align: "center",
-        weight: "bold",
-        fontSize: 12,
-        color: COLOR_BLACK,
-      },
-    );
-
-    // License number at y=930 (if present) — uses safeArabicMixed
-    // Format mirrors Python bot: "رقم الترخيص : {license_value}"
-    // Replace spaces with NBSP to prevent pdfkit run splitting
     const hasLicense = !!(payload.licenseNumber && !emptyIndicators.has(payload.licenseNumber.trim()));
     if (hasLicense) {
-      const licenseLine = `رقم الترخيص : ${payload.licenseNumber}`;
-      const processedLine = safeArabicMixed(licenseLine);
-      const withNbsp = processedLine.replace(/ /g, "\u00A0");
-      doc.font(fontArBold).fontSize(12).fillColor(COLOR_BLACK);
-      const lineW = doc.widthOfString(withNbsp);
-      const startX = 435 + (371 - lineW) / 2;
-      doc.text(withNbsp, startX, 930, {
-        align: "left",
-        lineBreak: false,
+      // رقم الترخيص في سطر منفصل — نهج المقاطع المنفصلة.
+      //
+      // المشكلة: النص الواحد `رقم الترخيص: 1410101201200443` لا يُعاد ترتيبه
+      // بشكل صحيح بواسطة BiDi المبسّط في fontkit (يُعرض بالترتيب المصدر LTR،
+      // فيكون العنوان العربي على اليسار والرقم على اليمين — وهذا خطأ للقارئ
+      // العربي الذي يتوقع العنوان على اليمين والرقم على اليسار).
+      //
+      // الحل: قسّم النص إلى مقاطع نقيّة الاتجاه (رقم LTR، نقطتين محايد،
+      // عنوان عربي RTL) واعرضها بالترتيب البصري الصحيح: الرقم على اليسار،
+      // النقطتين في الوسط، العنوان العربي على اليمين. كل مقطع نقي الاتجاه
+      // يُعرَض بشكل صحيح بواسطة pdfkit.
+      //
+      // License number on a separate line — piece-by-piece approach.
+      //
+      // Problem: single text `رقم الترخيص: 1410101201200443` is NOT correctly
+      // reordered by fontkit's simplified BiDi (it renders in source LTR order,
+      // placing the Arabic label on the left and the number on the right —
+      // wrong for an Arabic reader who expects the label on the right and the
+      // number on the left).
+      //
+      // Solution: split the text into pure-direction pieces (LTR number, neutral
+      // colon, RTL Arabic label) and render them in the correct visual order:
+      // number on the left, colon in the middle, Arabic label on the right.
+      // Each piece is pure-direction so pdfkit renders it correctly.
+      const licensePieces = [
+        { text: payload.licenseNumber, font: fontArReg },   // visual leftmost: the number (use Arabic font for consistent baseline)
+        { text: " ", font: fontArReg },                     // space
+        { text: ":", font: fontArReg },                     // colon
+        { text: " ", font: fontArReg },                     // space
+        { text: "رقم الترخيص", font: fontArReg },           // visual rightmost: Arabic label
+      ];
+      // استخدم نفس الخط (NotoSansArabic) لكل المقاطع لضمان محاذاة رأسية
+      // متطابقة (نفس الـ baseline). Times-Roman له ascender أقصر من
+      // NotoSansArabic مما يجعل الرقم يظهر مرتفعاً عن النص العربي.
+      // Use the same font (NotoSansArabic) for all pieces to ensure identical
+      // vertical baseline. Times-Roman has a shorter ascender than
+      // NotoSansArabic, causing the number to appear higher than the Arabic text.
+      renderVisualPieces({
+        pieces: licensePieces,
+        x: rightCenterX - 150,
+        y: footerY + 158,
+        width: 300,
+        height: 25,
+        fontSize: 12,
+        color: "#000000",
+        align: "center",
       });
     }
 
-    // ============================================================
-    // BOTTOM STRIP — Time + Date on left, National Info logo on right
-    // Time at x=34, y=961 (size 12, Times-Bold, black)
-    // Date at x=34, y=983 (size 12, Times-Bold, black)
-    // National Info logo at x=655, y=952, width=153
-    // ============================================================
+    const bottomY = pageHeight - 150;
     const now = new Date();
     const dateStr = now.toLocaleDateString("en-US", {
       weekday: "long",
@@ -705,19 +799,12 @@ export async function POST(req: NextRequest) {
     });
     const timeStr = payload.time || now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
-    drawTextEn(timeStr, 34, 961, {
-      fontSize: 12,
-      color: COLOR_BLACK,
-      weight: "bold",
-    });
-    drawTextEn(dateStr, 34, 983, {
-      fontSize: 12,
-      color: COLOR_BLACK,
-      weight: "bold",
-    });
+    doc.font(fontEnBold).fontSize(12).fillColor("#000000");
+    doc.text(timeStr, 40, bottomY);
+    doc.text(dateStr, 40, bottomY + 20);
 
     if (fs.existsSync(NATIONAL_INFO)) {
-      doc.image(NATIONAL_INFO, 655, 952, { width: 153 });
+      doc.image(NATIONAL_INFO, pageWidth - 160, bottomY - 20, { width: 120 });
     }
 
     doc.end();

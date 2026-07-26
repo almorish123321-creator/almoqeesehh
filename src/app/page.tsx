@@ -797,7 +797,7 @@ export default function Home() {
                         <FieldInput
                           key={field.key}
                           field={field}
-                          value={formData[field.key] ?? ""}
+                          value={formData[field.key]}
                           onChange={(v) => updateField(field.key, v)}
                           disabled={isBusy}
                         />
@@ -971,7 +971,7 @@ export default function Home() {
                       }
                     />
                   </div>
-                  <Button onClick={() => handleSearch()} disabled={searching} className="bg-[#2c3e77] hover:bg-[#243559] h-10">
+                  <Button onClick={handleSearch} disabled={searching} className="bg-[#2c3e77] hover:bg-[#243559] h-10">
                     {searching ? <Loader2 className="w-4 h-4 ml-2 animate-spin" /> : <Search className="w-4 h-4 ml-2" />}
                     بحث
                   </Button>
@@ -982,7 +982,7 @@ export default function Home() {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between text-xs text-slate-500">
                       <span>عدد النتائج: {records.length}</span>
-                      <Button variant="ghost" size="sm" onClick={() => handleSearch()} disabled={searching}>
+                      <Button variant="ghost" size="sm" onClick={handleSearch} disabled={searching}>
                         <RefreshCw className="w-3 h-3 ml-1" />
                         تحديث
                       </Button>

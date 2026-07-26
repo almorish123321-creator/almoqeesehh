@@ -43,6 +43,7 @@
         "@tanstack/react-table": "^8.21.3",
         "@vercel/blob": "^2.6.1",
         "@vercel/postgres": "^0.10.0",
+        "arabic-reshaper": "^1.1.0",
         "bidi-js": "^1.0.3",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
@@ -795,6 +796,8 @@
     "ansi-regex": ["ansi-regex@5.0.1", "", {}, "sha512-quJQXlTSUGL2LH9SUXo8VwsY4soanhgo6LNSm84E1LBcE8s3O0wpdiRzyR9z/ZZJMlMWv37qOOb9pdJlMUEKFQ=="],
 
     "ansi-styles": ["ansi-styles@4.3.0", "https://registry.npmjs.com/ansi-styles/-/ansi-styles-4.3.0.tgz", { "dependencies": { "color-convert": "^2.0.1" } }, "sha512-zbB9rCJAT1rbjiVDb2hqKFHNYLxgtk8NURxZ3IZwD3F6NtxbXZQCnnSi1Lkx+IDohdPlFp222wVALIheZJQSEg=="],
+
+    "arabic-reshaper": ["arabic-reshaper@1.1.0", "", {}, "sha512-DfF1CxCCgLi0XsqHFdr2cdi/7qEoupT76+6Q2vPPWroS6dinvKbomKMZD9AYxKAb+SXK+UYFuS3iBD0/ZVOzyw=="],
 
     "argparse": ["argparse@2.0.1", "https://registry.npmjs.com/argparse/-/argparse-2.0.1.tgz", {}, "sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q=="],
 
