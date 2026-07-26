@@ -552,19 +552,27 @@ export async function POST(req: NextRequest) {
     doc.moveTo(FOOTER_DIVIDER_X, FOOTER_TOP).lineTo(FOOTER_DIVIDER_X, FOOTER_BOTTOM).stroke();
 
     // --- LEFT HALF: QR code + verification text ---
-    // Build the inquiry URL once — used both for the QR code AND the clickable link
-    const inquiryUrl = `https://almoqeesehh.vercel.app/inquiries/slenquiry?gsl=${encodeURIComponent(payload.leaveNumber)}&id=${encodeURIComponent(payload.idNumber)}`;
+    // Build TWO URLs:
+    //   - qrUrl: the short inquiry URL (no query params) — encoded into the QR
+    //     code so scanning it just opens the inquiry page (matching the user's
+    //     request: "الباركود عن مسحه يطلع يكون هذا الرابط حق الاستعلامات
+    //     https://almoqeesehh.vercel.app/inquiries/slenquiry")
+    //   - clickUrl: the inquiry URL WITH gsl+id params — used for clickable
+    //     links inside the PDF so clicking them pre-fills the form and runs
+    //     the query automatically
+    const qrUrl = "https://almoqeesehh.vercel.app/inquiries/slenquiry";
+    const clickUrl = `${qrUrl}?gsl=${encodeURIComponent(payload.leaveNumber)}&id=${encodeURIComponent(payload.idNumber)}`;
 
     // QR code at x=170, y=743, width=119
-    // QR data now contains the actual inquiry URL (so scanning it with a phone
-    // opens the inquiry page directly), matching the user's request:
-    // "اريد اصلاحه ينقلني للاستعلامات"
+    // QR data contains the short inquiry URL (so scanning it opens the
+    // inquiry page), matching the user's request:
+    // "الباركود عن مسحه يطلع يكون هذا الرابط حق الاستعلامات"
     try {
-      const qrImage = await QRCode.toDataURL(inquiryUrl, { width: 470, margin: 0 });
+      const qrImage = await QRCode.toDataURL(qrUrl, { width: 470, margin: 0 });
       doc.image(qrImage, 170, 743, { width: 119 });
-      // Make the QR code itself clickable in the PDF (so clicking it on desktop
-      // also navigates to the inquiry page)
-      doc.link(170, 743, 119, 119, inquiryUrl);
+      // Make the QR code itself clickable in the PDF — opens the inquiry
+      // page (with gsl+id pre-filled so the query runs automatically)
+      doc.link(170, 743, 119, 119, clickUrl);
     } catch (e) {
       // ignore QR errors
     }
@@ -610,21 +618,22 @@ export async function POST(req: NextRequest) {
     );
 
     // URL link (size 11, Times-Bold, blue #0000ff, underlined)
-    // Display the actual inquiry URL (so the visible text matches where the
-    // link will navigate) and add an explicit `doc.link()` rectangle over
-    // the whole line so the link works reliably in every PDF viewer
-    // (Adobe Acrobat, browser viewers, mobile, etc.) — matching the user's
-    // request: "اريد اصلاحه ينقلني للاستعلامات"
+    // Display the short inquiry URL as the visible text (matching the
+    // user's request to show "https://almoqeesehh.vercel.app/inquiries/slenquiry"
+    // in the PDF) but link it to clickUrl (which has gsl+id params) so
+    // clicking it pre-fills the form and runs the query automatically.
+    // Also add an explicit `doc.link()` rectangle over the whole line so
+    // the link works reliably in every PDF viewer.
     doc.fillColor(COLOR_LINK).font(fontEnBold).fontSize(11);
-    doc.text(inquiryUrl, 35, 924, {
+    doc.text(qrUrl, 35, 924, {
       width: 400,
       align: "center",
-      link: inquiryUrl,
+      link: clickUrl,
       underline: true,
     });
     // Explicit link rectangle over the entire URL line area — guarantees
     // clickability even in PDF viewers that ignore the text-run link option
-    doc.link(35, 924, 400, 18, inquiryUrl);
+    doc.link(35, 924, 400, 18, clickUrl);
 
     // --- RIGHT HALF: Hospital logo + name + license ---
     // Hospital logo at x=575, y=746, width=122

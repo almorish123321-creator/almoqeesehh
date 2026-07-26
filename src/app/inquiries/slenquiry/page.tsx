@@ -294,8 +294,18 @@ export default function SlenquiryPage() {
       <div style={{ zIndex: 99, opacity: 1, transform: "none" }}>
         <nav className="header navbar-expand-lg navbar-light px-4">
           <div className="nav-container">
-            {/* الشعار الملوّن — مرئي بدون filter على الخلفية الفاتحة */}
-            <a className="" href="/" aria-label="الرئيسية">
+            {/* الشعار الملوّن — مرئي بدون filter على الخلفية الفاتحة
+                صفحة الاستعلام منفصلة عن لوحة الإدخال، فالشعار لا ينتقل
+                المستخدم إلى /. بدلاً من ذلك يبقى في صفحة الاستعلام. */}
+            <a
+              className=""
+              href="/inquiries/slenquiry"
+              aria-label="الاستعلامات"
+              onClick={(e) => {
+                e.preventDefault();
+                resetForm();
+              }}
+            >
               <img
                 src="/images/seha-color-logo.svg"
                 alt="صحة - منصة الخدمات الصحية"
@@ -326,19 +336,22 @@ export default function SlenquiryPage() {
               style={menuOpen ? { display: "block" } : undefined}
             >
               <div className="navbar justify-content-around navbar-nav">
+                {/* روابط nav في صفحة الاستعلام تبقى في نفس الصفحة —
+                    لا تنتقل المستخدم إلى لوحة الإدخال. فقط "الاستعلامات"
+                    نشط والباقي تتصرف كأزرار بدون تنقل (preventDefault). */}
                 <a
                   data-rr-ui-event-key="1"
                   className="link nav-link"
-                  href="/"
-                  onClick={closeMenu}
+                  href="/inquiries/slenquiry"
+                  onClick={(e) => { e.preventDefault(); closeMenu(); resetForm(); }}
                 >
                   الرئيسية
                 </a>
                 <a
                   data-rr-ui-event-key="2"
                   className="link nav-link"
-                  href="/#services"
-                  onClick={closeMenu}
+                  href="/inquiries/slenquiry"
+                  onClick={(e) => { e.preventDefault(); closeMenu(); }}
                 >
                   الخدمات
                 </a>
@@ -346,42 +359,44 @@ export default function SlenquiryPage() {
                   data-rr-ui-event-key="3"
                   className="link nav-link active"
                   href="/inquiries/slenquiry"
-                  onClick={closeMenu}
+                  onClick={(e) => { e.preventDefault(); closeMenu(); }}
                 >
                   الاستعلامات
                 </a>
                 <a
                   data-rr-ui-event-key="4"
                   className="link nav-link"
-                  href="/#faq"
-                  onClick={closeMenu}
+                  href="/inquiries/slenquiry"
+                  onClick={(e) => { e.preventDefault(); closeMenu(); }}
                 >
                   الأسئلة الشائعة
                 </a>
                 <a
                   data-rr-ui-event-key="5"
                   className="link nav-link"
-                  href="/#contactus"
-                  onClick={closeMenu}
+                  href="/inquiries/slenquiry"
+                  onClick={(e) => { e.preventDefault(); closeMenu(); }}
                 >
                   تواصل معنا
                 </a>
               </div>
               <div className="navbar justify-content-end navbar-nav">
+                {/* أزرار إنشاء حساب/تسجيل الدخول في صفحة الاستعلام تبقى في
+                    نفس الصفحة — لا تنتقل المستخدم إلى لوحة الإدخال. */}
                 <a
                   data-rr-ui-event-key="6"
                   className="nav-link"
-                  href="/#signup"
-                  onClick={closeMenu}
+                  href="/inquiries/slenquiry"
+                  onClick={(e) => { e.preventDefault(); closeMenu(); }}
                 >
                   <p>إنشاء حساب</p>
                 </a>
                 <a
                   data-rr-ui-event-key="7"
                   className="login nav-link"
-                  href="/#login"
+                  href="/inquiries/slenquiry"
                   style={{ display: "flex", alignItems: "center", gap: "5px" }}
-                  onClick={closeMenu}
+                  onClick={(e) => { e.preventDefault(); closeMenu(); }}
                 >
                   <p style={{ margin: 0 }}>تسجيل الدخول</p>
                 </a>
@@ -522,10 +537,15 @@ export default function SlenquiryPage() {
             </form>
           </div>
           <div className="col-md-12 text-center">
-            {/* زر "رجوع للاستعلامات" — ينتقل لصفحة الإدخال (/) */}
-            <a className="btn btn-primary mb-3" href="/">
-              رجوع للاستعلامات
-            </a>
+            {/* زر "استعلام جديد" — يبقى في صفحة الاستعلام ولا ينتقل
+                المستخدم إلى لوحة الإدخال. صفحة الاستعلام منفصلة تماماً. */}
+            <button
+              type="button"
+              className="btn btn-primary mb-3"
+              onClick={resetForm}
+            >
+              استعلام جديد
+            </button>
           </div>
         </div>
       </div>
@@ -547,17 +567,31 @@ export default function SlenquiryPage() {
           <div className="links section" style={{ alignItems: "center" }}>
             <h3 className="heading">القائمة الرئيسية</h3>
             <ul className="links-wrapepr">
+              {/* روابط القائمة الرئيسية في الـfooter تبقى في صفحة الاستعلام
+                  ولا تنقل المستخدم إلى لوحة الإدخال. */}
               <li className="inquiry-li">
-                <a className="nav-link" href="/#services">الخدمات</a>
+                <a
+                  className="nav-link"
+                  href="/inquiries/slenquiry"
+                  onClick={(e) => e.preventDefault()}
+                >الخدمات</a>
               </li>
               <li className="inquiry-li">
                 <a className="nav-link" href="/inquiries/slenquiry">الاستعلامات</a>
               </li>
               <li className="inquiry-li">
-                <a className="nav-link" href="/#faq">الأسئلة الشائعة</a>
+                <a
+                  className="nav-link"
+                  href="/inquiries/slenquiry"
+                  onClick={(e) => e.preventDefault()}
+                >الأسئلة الشائعة</a>
               </li>
               <li className="inquiry-li" style={{ borderBottom: "none" }}>
-                <a className="nav-link" href="/#contactus">تواصل معنا</a>
+                <a
+                  className="nav-link"
+                  href="/inquiries/slenquiry"
+                  onClick={(e) => e.preventDefault()}
+                >تواصل معنا</a>
               </li>
             </ul>
           </div>

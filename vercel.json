@@ -18,5 +18,11 @@
       "maxDuration": 15,
       "memory": 256
     }
+  },
+  "build": {
+    "env": {
+      "DEMO_MODE": "true",
+      "NEXT_TELEMETRY_DISABLED": "1"
+    }
   }
 }
