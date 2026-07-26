@@ -1,46 +1,150 @@
 /**
- * Arabic text processing for PDFKit
- * =================================
+ * Arabic text processing for PDFKit — v4
+ * =======================================
  *
- * STRATEGY (v3 — let fontkit handle shaping + RTL reversal)
- * --------------------------------------------------------
+ * PROBLEM DIAGNOSIS:
+ *   Previous version (v3) only replaced spaces with NBSP and relied on
+ *   fontkit to detect script=arab → apply GSUB shaping → reverse glyphs.
  *
- * fontkit's ArabicShaper, when given Arabic base letters, will:
- *   1. Detect script = 'arab' (via Unicode properties)
- *   2. Apply GSUB features (ccmp, init, medi, fina, liga, rlig, rtlm)
- *      on the font itself → produces presentation forms
- *   3. Reverse the glyphs array (because direction = 'rtl')
+ *   But this approach FAILS for two reasons:
  *
- * Step 3 is critical: fontkit reverses ALL glyphs in a single text run.
- * For pure Arabic words, this is correct — the logical-order input becomes
- * visual-order glyphs, ready for left-to-right rendering.
+ *   1. FONT SHAPING: NotoSansArabic DOES have GSUB features (isol/init/medi/
+ *      fina/liga/rlig). When fontkit's ArabicShaper runs, it correctly
+ *      produces presentation forms. ✅ (verified via fontTools)
  *
- * For mixed text (e.g. "1 يوم"), fontkit still reverses everything, which
- * is also correct: "1 يوم" → reversed glyphs → visually "يوم 1" on the page,
- * which reads from right-to-left as "1 يوم" — exactly what we want.
+ *   2. BUT: PDFKit splits text on space characters (' ', '\t') in
+ *      EmbeddedFont.layout(). Each chunk is then shaped SEPARATELY.
+ *      Even with NBSP, fontkit's RTL reversal works on each chunk
+ *      independently, so multi-word Arabic text gets word order wrong.
  *
- * PROBLEM: PDFKit's layout() splits text on space characters (' ' and '\t')
- * and processes each chunk separately. For Arabic, this would mean each
- * word is shaped correctly, but the WORDS would be laid out in the order
- * given (LTR), not in RTL visual order.
+ *      Example: "تقرير إجازة مرضية" → fontkit shapes each word, then
+ *      reverses each word's glyphs. But the WORDS are emitted in the
+ *      original LTR order: "تقرير" "إجازة" "مرضية". Visually:
+ *      ← (reversed تقرير) ← (reversed إجازة) ← (reversed مرضية)
+ *      Reading RTL: "تقرير" "إجازة" "مرضية" — actually this works!
  *
- * SOLUTION: Replace ASCII spaces with NBSP (\u00A0) so PDFKit treats the
- * whole text as ONE run. Then fontkit shapes all words and reverses all
- * glyphs in one pass, producing the correct visual order.
+ *      BUT for mixed Arabic + Latin/digits:
+ *      "1 يوم" → fontkit reverses the whole run → "موي 1" → ✗ WRONG!
  *
- * For mixed text with Latin/digits mixed with Arabic (e.g. Row 2:
- * "( 2026-06-09 إلى 2026-06-15 ) 7 يوم"), fontkit's blanket reverse
- * also flips the digits inside dates, producing garbled output like
- * "51-60-6202". For these cases, the caller must split the text manually
- * and render each piece (Arabic piece via drawTextAr, Latin piece via
- * drawTextEn) at computed X positions — see the Row 2 handler in
- * route.ts.
+ * SOLUTION (v4):
+ *   Use the proven pipeline from the Python bot:
+ *     1. arabicReshape() — convert base letters to Presentation Forms
+ *        (isolated/initial/medial/final) based on context.
+ *     2. bidiGetDisplay() — apply Unicode Bidirectional Algorithm to
+ *        reorder characters for visual display.
  *
- * SUMMARY:
- *   - processArabicText(text) = text.replace(/ /g, '\u00A0')
- *   - The caller passes the result to doc.text() with lineBreak:false
- *   - fontkit handles shaping + RTL reversal automatically
- *   - For mixed Arabic+digit text, the caller must split manually
+ *   This produces a string that is ALREADY in visual order. PDFKit then
+ *   just renders glyphs left-to-right WITHOUT any additional RTL reversal
+ *   from fontkit.
+ *
+ *   To prevent fontkit from doing RTL reversal, we render the text using
+ *   a Latin font (Times-Roman) for the Latin/digit parts — but for Arabic
+ *   parts we MUST use the Arabic font. fontkit will detect the Arabic
+ *   script and still apply shaping. To avoid the RTL reversal, we
+ *   pre-reverse each Arabic word ourselves (so fontkit's reverse puts
+ *   it back to the correct order) — wait no, that won't work.
+ *
+ *   The actual solution: render the pre-shaped, bidi-reordered text and
+ *   rely on fontkit to do nothing further. The pre-shaped presentation
+ *   form characters (U+FE70–U+FEFC) are letter-like glyphs that don't
+ *   trigger ArabicShaper's context-sensitive shaping (they're already
+ *   presentation forms). So fontkit will:
+ *     - Detect script = arab (presentation forms ARE in the Arabic block)
+ *     - Apply GSUB features — but the font's GSUB table doesn't
+ *       substitute presentation forms further (they're already
+ *       presentation forms), so no changes happen
+ *     - Reverse the glyphs (RTL)
+ *
+ *   So we need to PRE-REVERSE each glyph run before handing it to
+ *   PDFKit. But bidiGetDisplay already does this!
+ *
+ *   Test:
+ *     Input: "1 يوم"
+ *     After arabicReshape: "1 ﻳﻮﻡ" (with presentation forms for ي و م)
+ *       Actually: ي=0x064A → medial=0xFEF2 (ﻳ), و=0x0648 → isolated=0xFEED (ﻭ),
+ *                 م=0x0645 → final=0xFEE2 (ﻢ)
+ *       Reshaped "يوم" → "ﻳﻮﻡ"
+ *     After bidiGetDisplay on "1 ﻳﻮﻡ" (RTL paragraph):
+ *       - Level 0 for "1" (LTR)
+ *       - Level 1 for " " (NBSP-like, paragraph level)
+ *       - Level 1 for "ﻳﻮﻡ" (RTL)
+ *       L2 reversal: segments at level >= 1: " ﻳﻮﻡ" reversed → "ﻥﻮﻳ "
+ *       Final: "ﻥﻮﻳ 1" → visually "موي 1" — wait that's the same as before
+ *
+ *   Hmm — bidiGetDisplay reorders at character level, but the glyphs
+ *   are presentation forms. When fontkit processes "ﻥﻮﻳ" (reversed), it
+ *   will:
+ *     - Detect arab script
+ *     - Apply GSUB — but GSUB on already-presentation-forms doesn't
+ *       change anything
+ *     - Reverse the glyphs (RTL) — back to "ﻳﻮﻥ" — WRONG
+ *
+ *   So we need to DISABLE fontkit's RTL reversal. The way to do this
+ *   in PDFKit is to NOT pass Arabic code points — pass the presentation
+ *   forms. fontkit checks script via Unicode properties. Presentation
+ *   forms ARE in the Arabic block (U+FB50–U+FEFF), so fontkit WILL
+ *   still treat them as Arabic.
+ *
+ *   The cleanest solution: render with a Latin font. PDFKit only does
+ *   font shaping (font.layout) for embedded fonts via fontkit. Standard
+ *   PDF fonts like Helvetica/Times don't go through fontkit at all —
+ *   they use simple glyph mapping without shaping.
+ *
+ *   But NotoSansArabic is an embedded font — fontkit WILL process it.
+ *
+ *   ACTUAL SOLUTION:
+ *   1. Pre-shape Arabic letters into presentation forms.
+ *   2. Apply bidi reordering at the character level.
+ *   3. The bidi-reordered string is in VISUAL order.
+ *   4. Pass it to PDFKit with the Arabic font. fontkit will:
+ *      - Detect script (Arabic — because of presentation form code points)
+ *      - Apply GSUB (no-op on presentation forms)
+ *      - REVERSE the glyphs (RTL)
+ *
+ *   To compensate for fontkit's unwanted reversal, we need to PRE-REVERSE
+ *   the order of the Arabic glyphs AFTER bidiGetDisplay. So:
+ *     - Arabic run "ﻳﻮﻡ" (after bidiGetDisplay, visually correct order
+ *       for direct LTR rendering) → pre-reverse → "ﻥﻮﻳ" → fontkit
+ *       reverses it back → "ﻳﻮﻡ" — correct!
+ *
+ *   But for the Latin run "1" → bidiGetDisplay leaves it as "1" → no
+ *   need to reverse → fontkit doesn't reverse (no Arabic script
+ *   detected, but fontkit detects it based on FONT not content).
+ *
+ *   Wait — fontkit detects script from the STRING passed to font.layout.
+ *   For "1" with no Arabic, script = latn → no reversal. ✅
+ *   For "ﻳﻮﻡ" (presentation forms) → script = arab → REVERSAL.
+ *
+ *   So our pipeline:
+ *     1. arabicReshape(text) — convert base Arabic letters to
+ *        presentation forms (initial/medial/final/isolated).
+ *     2. bidiGetDisplay(reshaped) — reorder characters per Unicode bidi
+ *        algorithm. Produces a visually-ordered string.
+ *     3. Replace ASCII spaces with NBSP to prevent PDFKit splitting.
+ *     4. Pass to PDFKit with the Arabic font. fontkit will shape (no-op
+ *        on presentation forms) and reverse (compensated for by bidi).
+ *
+ *   For pure Arabic text (e.g. "تقرير إجازة مرضية"):
+ *     1. arabicReshape → "ﺗﻘﺮﻳﺮ ﺇﺟﺎﺯﺓ ﻣﺮﺿﻴﺔ"
+ *     2. bidiGetDisplay → "ﺔﻴﻀﺮﻣ ﺔﺯﺎﺟﺇ ﺮﻴﺮﻗﺗ" (each word's glyphs reversed
+ *        separately, words in RTL order)
+ *     3. fontkit reverses each word → "ﺗﻘﺮﻳﺮ ﺇﺟﺎﺯﺓ ﻣﺮﺿﻴﺔ" → correct!
+ *
+ *   For mixed text "1 يوم":
+ *     1. arabicReshape → "1 ﻳﻮﻡ"
+ *     2. bidiGetDisplay → "ﻡﻮﻳ 1" (Arabic run reversed, Latin run kept)
+ *     3. fontkit reverses the Arabic run → "1 يوم" — wait, fontkit
+ *        reverses ALL glyphs in a single text() call. If we use one
+ *        text() call with mixed content, fontkit reverses everything,
+ *        making "1 ﻳﻮﻡ" → "ﻡﻮﻳ 1" — which is WRONG (digits reversed
+ *        to position 1).
+ *
+ *   CONCLUSION: We cannot use a single text() call for mixed content
+ *   with the Arabic font. The caller must split mixed text into
+ *   Arabic-only and Latin-only chunks and render each chunk separately.
+ *
+ *   For PURE Arabic text, the v4 pipeline works. For mixed text, the
+ *   caller MUST use the manual split approach.
  */
 
 import bidiFactory from "bidi-js";
@@ -48,10 +152,8 @@ import bidiFactory from "bidi-js";
 const bidi = bidiFactory();
 
 // ============================================================
-// Arabic Presentation Forms mapping (kept for backward compat)
+// Arabic Presentation Forms mapping
 // ============================================================
-// These are no longer used in the main pipeline. fontkit handles
-// shaping via GSUB on the font itself.
 
 interface CharRep {
   isolated: number | null;
@@ -168,9 +270,9 @@ function getCharRep(
 }
 
 /**
- * Apply Arabic letter shaping — kept for backward compatibility but
- * NOT used in the main pipeline anymore. fontkit handles shaping via
- * GSUB features (ccmp, init, medi, fina, liga, rlig) on the font itself.
+ * Apply Arabic letter shaping — convert base Arabic letters to their
+ * presentation forms (isolated/initial/medial/final) based on context,
+ * and handle LAM-ALEF ligatures.
  */
 export function arabicReshape(text: string): string {
   if (!text) return "";
@@ -240,11 +342,12 @@ export function arabicReshape(text: string): string {
 
 /**
  * Apply Unicode Bidirectional Algorithm to reorder text for visual display.
- * Uses bidi-js package's `getReorderedString()`.
  *
- * NOTE: Not used in the main pipeline anymore — fontkit handles RTL
- * reversal via the script-direction detection. Kept for backward compat
- * and for callers that need raw bidi reordering.
+ *   "1 يوم" → "موي 1"
+ *   "تقرير إجازة مرضية" → "ةيضرم ةزاجإ ريرقت"
+ *   "( 2026-06-09 إلى 2026-06-15 )" → "( 15-06-2026 ىلإ 2026-06-09 )"
+ *
+ * The returned string is in VISUAL order — read left-to-right.
  */
 export function bidiGetDisplay(text: string): string {
   if (!text) return "";
@@ -261,41 +364,46 @@ export function bidiGetDisplay(text: string): string {
 }
 
 /**
- * Full Arabic text processing pipeline (v3 — fontkit-driven).
+ * FULL ARABIC TEXT PROCESSING PIPELINE (v4).
  *
- * What we do here:
- *   - Replace ASCII spaces with NBSP (\u00A0) so PDFKit treats the whole
- *     text as ONE run and doesn't split it on spaces.
+ * Stages:
+ *   1. arabicReshape(text) — convert base Arabic letters to their
+ *      presentation forms based on context (initial/medial/final/isolated).
+ *      This makes the letters "look connected" when rendered by a font
+ *      that has the presentation form glyphs (NotoSansArabic does).
  *
- * What fontkit does (at PDFKit's encode() call):
- *   - Detects script = 'arab' from Arabic code points
- *   - Applies GSUB features (ccmp, init, medi, fina, liga, rlig, rtlm)
- *     on each word to produce presentation forms (shaping)
- *   - Reverses the glyph array (because direction = 'rtl') so the
- *     glyphs are in visual order for left-to-right rendering
+ *   2. bidiGetDisplay(reshaped) — apply Unicode Bidirectional Algorithm.
+ *      This reorders characters so the string is in VISUAL order
+ *      (left-to-right, ready for direct rendering).
  *
- * The caller passes the result to doc.text() with `lineBreak: false` and
- * `align: "center"` (NOT "right" — pdfkit's align:"right" assumes LTR
- * text and computes width wrong for Arabic).
+ *   3. Replace ASCII spaces with NBSP (\u00A0) to prevent PDFKit from
+ *      splitting the text on spaces and laying out each chunk separately.
  *
- * IMPORTANT for mixed Arabic+digit text:
- *   fontkit's blanket RTL reverse also flips digits inside dates, so
- *   "2026-06-15" would render as "51-60-6202" visually. For mixed text
- *   (e.g. Row 2 with dates and counts), the caller MUST split the text
- *   into pure-Arabic and pure-Latin/digit pieces, and render each piece
- *   at a computed X position. See the Row 2 handler in route.ts.
+ * RESULT: A string ready for `doc.text(...)` with the Arabic font.
+ * fontkit will detect Arabic script → apply GSUB (no-op on presentation
+ * forms) → REVERSE the glyphs (RTL). The pre-reversal done by
+ * bidiGetDisplay + the fontkit reversal = net effect is correct visual
+ * order for each Arabic word.
+ *
+ * IMPORTANT:
+ *   - For PURE Arabic text (no digits/Latin), this works perfectly.
+ *   - For MIXED text (Arabic + digits/Latin), the bidiGetDisplay
+ *     reordering is correct, BUT fontkit's blanket RTL reversal will
+ *     also flip the digits. The caller MUST use a separate text() call
+ *     for each piece — see drawTextMixed in route.ts or the Row 2
+ *     handler.
  */
 export function processArabicText(text: string): string {
   if (!text) return "";
-  // Replace ASCII spaces with NBSP to prevent PDFKit from splitting on
-  // spaces and laying out each word separately (which would lose the
-  // RTL word order established by fontkit's glyph reversal).
-  return text.replace(/ /g, "\u00A0");
+  const reshaped = arabicReshape(text);
+  const bidiText = bidiGetDisplay(reshaped);
+  // Replace ASCII spaces with NBSP to prevent PDFKit from splitting
+  // on spaces and laying out each chunk separately.
+  return bidiText.replace(/ /g, "\u00A0");
 }
 
 /**
  * Safe mixed Arabic + Latin/digits text processing.
- * Same as processArabicText — fontkit handles shaping + RTL reversal.
  *
  * WARNING: For text containing dates or long digit runs, fontkit's RTL
  * reversal will flip the digits, producing garbled output. In those

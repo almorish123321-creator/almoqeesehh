@@ -505,8 +505,10 @@ export async function POST(req: NextRequest) {
       //   - Latin/digit parts (parens, dates, count) → fontEnReg (Times-Roman),
       //     rendered LTR as-is, no fontkit RTL reversal because script=latn
       //   - Arabic parts ("إلى", "يوم") → fontArReg (NotoSansArabic),
-      //     fontkit detects script=arab → applies GSUB shaping → reverses glyphs
-      //     so the visual order is correct
+      //     processed via processArabicText (arabicReshape + bidiGetDisplay + NBSP)
+      //     so the glyphs are pre-shaped presentation forms in visual order.
+      //     fontkit detects script=arab → applies GSUB (no-op on presentation
+      //     forms) → reverses glyphs (RTL) so the visual order is correct.
       const cellX = COL_X[2] + 10;
       const cellW = COL_W[2] - 20;
       const cellY = y;
@@ -517,8 +519,8 @@ export async function POST(req: NextRequest) {
       const closeParen = ")";
       const date1Str = startDateAr; // "2026-06-09" (Latin only)
       const date2Str = endDateAr;   // "2026-06-15" (Latin only)
-      const arabicIla = "إلى";       // Arabic word (fontkit will shape it)
-      const arabicYawm = "يوم";      // Arabic word (fontkit will shape it)
+      const arabicIla = processArabicText("إلى");  // pre-shaped, bidi-ordered
+      const arabicYawm = processArabicText("يوم"); // pre-shaped, bidi-ordered
       const numStr = String(payload.dayCount); // "1"
 
       // Find a font size where all parts fit within the cell width.
@@ -584,8 +586,9 @@ export async function POST(req: NextRequest) {
 
       // Render each sub-part as a separate text() call.
       // Latin/digit parts use fontEnReg (Times-Roman) — LTR, no reversal.
-      // Arabic parts use fontArReg (NotoSansArabic) — fontkit shapes via GSUB
-      // and reverses glyphs (RTL) so the visual order is correct.
+      // Arabic parts use fontArReg (NotoSansArabic) with pre-shaped text from
+      // processArabicText — fontkit shapes via GSUB (no-op on presentation
+      // forms) and reverses glyphs (RTL) so the visual order is correct.
       doc.font(fontEnReg).fontSize(arFontSize).fillColor(COLOR_WHITE);
       doc.text(openParen, xOpenParen, valArY, { align: "left", lineBreak: false });
       doc.text(date1Str, xDate1, valArY, { align: "left", lineBreak: false });
