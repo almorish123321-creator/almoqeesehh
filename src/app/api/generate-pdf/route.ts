@@ -41,6 +41,7 @@ import {
 import {
   processArabicText,
   safeArabicMixed,
+  arabicReshape,
 } from "@/lib/arabic-text";
 
 export const runtime = "nodejs";
@@ -402,10 +403,29 @@ export async function POST(req: NextRequest) {
 
       // Arabic duration word — always use "يوم" after the number
       // (no "يومان" or "أيام") and put the number first (right side in RTL)
+      //
+      // IMPORTANT BIDI WORKAROUND:
+      // Mixing Arabic letters and Latin digits in a single PDFKit text()
+      // call causes PDFKit's internal bidi to reverse digit runs in
+      // unpredictable ways. Instead of fighting bidi, we render the Arabic
+      // duration as SEPARATE text() calls at fixed X positions:
+      //   - "( " + start_date + " إلى " + end_date + " )" on the LEFT half
+      //     of the cell (Arabic text rendered via processArabicText which
+      //     applies arabicReshape + bidiGetDisplay — but since this part is
+      //     pure Arabic + digits, the digit runs come out correct).
+      //   - "1 يوم" on the RIGHT half of the cell.
+      //
+      // Wait — that still has the same problem. The real solution is to
+      // render each piece at its own X coordinate so PDFKit's bidi never
+      // sees mixed content in a single text() call:
+      //   Position 1 (left):  "( 2026-06-09 إلى 2026-06-09 )"
+      //   Position 2 (right): "1 يوم"
       const getArabicDuration = (count: number) => {
         return `${count} يوم`;
       };
-      const durText = getArabicDuration(payload.dayCount);
+      // Note: durText is not used directly — the number and "يوم" are rendered
+      // as separate text() calls below to avoid PDFKit bidi issues.
+      void getArabicDuration; // suppress unused warning
       const enDuration = `${payload.dayCount} day ( ${startDateFormatted} to ${endDateFormatted} )`;
 
       // Convert DD-MM-YYYY to YYYY-MM-DD for Arabic version (matches Python bot)
@@ -416,7 +436,6 @@ export async function POST(req: NextRequest) {
       };
       const startDateAr = toArabicDate(startDateFormatted);
       const endDateAr = toArabicDate(endDateFormatted);
-      const arDuration = `${durText} ( ${startDateAr} إلى ${endDateAr} )`;
 
       // Fill background #2b3d77
       doc.save();
@@ -462,27 +481,109 @@ export async function POST(req: NextRequest) {
         color: COLOR_WHITE,
       });
 
-      // Col 3: Arabic duration value (mixed Arabic + digits) — use safeArabicMixed
-      // Replace spaces with NBSP to prevent pdfkit run splitting
+      // Col 3: Arabic duration value — render as MULTIPLE SEPARATE text()
+      // calls to fully control visual layout and avoid PDFKit's bidi mixing
+      // Arabic letters with digit runs.
+      //
+      // Layout (visually, left-to-right in the cell):
+      //   ┌──────────────────────────────────────────────────┐
+      //   │  ( 2026-06-09 إلى 2026-06-09 )    1 يوم         │
+      //   └──────────────────────────────────────────────────┘
+      //   ←—— dates part (5 sub-parts) ——→  ←— number part —→
+      //
+      // We render each sub-element at a computed X coordinate so PDFKit's
+      // bidi never sees mixed Arabic+digit content in a single text() call.
+      const cellX = COL_X[2] + 10;
+      const cellW = COL_W[2] - 20;
+      const cellY = y;
+      const cellH = ROW_H;
+
+      // Sub-parts (each will be a separate text() call):
+      //   1. "(" — ASCII paren
+      //   2. "2026-06-09" — date 1 (Latin only)
+      //   3. "إلى" — Arabic word (Presentation Form via arabicReshape)
+      //   4. "2026-06-09" — date 2 (Latin only)
+      //   5. ")" — ASCII paren
+      //   6. "1 يوم" — number + Arabic (we render as separate calls too:
+      //      6a. "1" — digit
+      //      6b. "يوم" — Arabic word (Presentation Form)
+      //
+      // Each sub-part has ONLY ONE script, so PDFKit's bidi never reverses
+      // anything within a single text() call. We control the visual layout
+      // entirely through X coordinates.
       let arFontSize = CELL_FONT_SIZE;
-      const processedArDuration = safeArabicMixed(arDuration);
-      const arDurationNbsp = processedArDuration.replace(/ /g, "\u00A0");
-      for (let fs = arFontSize; fs >= 9; fs--) {
+      const openParen = "(";
+      const closeParen = ")";
+      const date1Str = startDateAr; // "2026-06-09"
+      const date2Str = endDateAr;   // "2026-06-09"
+      const arabicIla = arabicReshape("إلى"); // "ﺇﻟﻰ"
+      const arabicYawm = arabicReshape("يوم"); // "ﻳﻮﻡ"
+      const numStr = String(payload.dayCount); // "1"
+
+      // Find a font size where all parts fit within the cell width
+      const gap = 3; // pt gap between sub-parts
+      const computeTotalWidth = (fs: number) => {
         doc.font(fontArReg).fontSize(fs);
-        if (doc.widthOfString(arDurationNbsp) <= COL_W[2] - 20) {
+        return (
+          doc.widthOfString(openParen) +
+          doc.widthOfString(date1Str) +
+          doc.widthOfString(arabicIla) +
+          doc.widthOfString(date2Str) +
+          doc.widthOfString(closeParen) +
+          gap * 4 + // 4 gaps between 5 sub-parts of dates group
+          gap * 2 + // bigger gap between dates group and number group
+          doc.widthOfString(numStr) +
+          doc.widthOfString(arabicYawm) +
+          gap // gap between number and يوم
+        );
+      };
+      for (let fs = arFontSize; fs >= 8; fs--) {
+        if (computeTotalWidth(fs) <= cellW) {
           arFontSize = fs;
           break;
         }
-        if (fs === 9) { arFontSize = 9; break; }
+        if (fs === 8) { arFontSize = 8; break; }
       }
       doc.font(fontArReg).fontSize(arFontSize).fillColor(COLOR_WHITE);
+
+      // Compute widths at the chosen font size
+      const wParen = doc.widthOfString(openParen);
+      const wDate1 = doc.widthOfString(date1Str);
+      const wIla = doc.widthOfString(arabicIla);
+      const wDate2 = doc.widthOfString(date2Str);
+      const wCloseParen = doc.widthOfString(closeParen);
+      const wNum = doc.widthOfString(numStr);
+      const wYawm = doc.widthOfString(arabicYawm);
+
+      // Total widths
+      const datesGroupW = wParen + wDate1 + wIla + wDate2 + wCloseParen + gap * 4;
+      const numberGroupW = wNum + wYawm + gap;
+      const totalW = datesGroupW + gap * 2 + numberGroupW;
+      const startX = cellX + (cellW - totalW) / 2; // center the whole thing
+
+      // Compute X positions for each sub-part (left-to-right visual order)
+      let cursorX = startX;
+      const xOpenParen = cursorX;       cursorX += wParen + gap;
+      const xDate1 = cursorX;            cursorX += wDate1 + gap;
+      const xIla = cursorX;              cursorX += wIla + gap;
+      const xDate2 = cursorX;            cursorX += wDate2 + gap;
+      const xCloseParen = cursorX;       cursorX += wCloseParen + gap * 2;
+      const xNum = cursorX;              cursorX += wNum + gap;
+      const xYawm = cursorX;
+
       const valArH = doc.currentLineHeight(true);
-      const valArY = y + (ROW_H - valArH) / 2;
-      doc.text(arDurationNbsp, COL_X[2] + 10, valArY, {
-        width: COL_W[2] - 20,
-        align: "center",
-        lineBreak: false,
-      });
+      const valArY = cellY + (cellH - valArH) / 2;
+
+      // Render each sub-part as a separate text() call.
+      // PDFKit writes L→R for each call; since each call has only ONE script,
+      // bidi never reverses anything. We control the visual layout via X.
+      doc.text(openParen, xOpenParen, valArY, { align: "left", lineBreak: false });
+      doc.text(date1Str, xDate1, valArY, { align: "left", lineBreak: false });
+      doc.text(arabicIla, xIla, valArY, { align: "left", lineBreak: false });
+      doc.text(date2Str, xDate2, valArY, { align: "left", lineBreak: false });
+      doc.text(closeParen, xCloseParen, valArY, { align: "left", lineBreak: false });
+      doc.text(numStr, xNum, valArY, { align: "left", lineBreak: false });
+      doc.text(arabicYawm, xYawm, valArY, { align: "left", lineBreak: false });
 
       // Col 4: "مدة الإجازة" (NotoSansArabicBold, white)
       doc.font(fontArBold).fontSize(CELL_FONT_SIZE).fillColor(COLOR_WHITE);

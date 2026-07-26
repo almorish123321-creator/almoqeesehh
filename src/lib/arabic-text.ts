@@ -195,15 +195,23 @@ function getCharRep(
 /**
  * Apply Arabic letter shaping — convert base letters to presentation forms
  * based on context. Mirrors `arabic_reshaper.reshape()` from Python.
+ *
+ * IMPORTANT: We preserve LRM (U+200E) and RLM (U+200F) marks because they
+ * are essential for controlling the visual order of mixed LTR/RTL runs
+ * (e.g., ensuring "1 يوم" displays as "number on right, يوم on left" and
+ * dates like "2026-06-09" don't get mirrored). These marks are zero-width
+ * so they don't visually render — they only influence bidi-js reordering.
+ * PDFKit renders them as zero-width characters, not as tofu boxes.
  */
 export function arabicReshape(text: string): string {
   if (!text) return "";
 
-  // Remove format control characters (LRM, RLM, ZWJ, ZWNJ)
+  // Remove only ZWJ/ZWNJ (which pdfkit would render as boxes), but KEEP
+  // LRM/RLM marks (U+200E, U+200F) so bidi-js can use them for direction.
   let cleaned = "";
   for (const ch of text) {
     const code = ch.codePointAt(0)!;
-    if (code === 0x200e || code === 0x200f || code === 0x200d || code === 0x200c) {
+    if (code === 0x200d || code === 0x200c) {
       continue;
     }
     cleaned += ch;
