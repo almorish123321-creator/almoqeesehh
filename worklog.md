@@ -1962,3 +1962,25 @@ Tested locally via `scripts/test-v4.js` and via the actual `/api/generate-pdf` r
 - `src/lib/arabic-text.ts` — restored arabicReshape() and bidiGetDisplay() functions; processArabicText() now runs full pipeline (reshape → bidi → NBSP)
 - `src/app/api/generate-pdf/route.ts` — Row 2 Leave Duration now pre-processes "إلى" and "يوم" via processArabicText before rendering; updated comments
 - `scripts/test-v4.js` — standalone test script for the new pipeline
+
+---
+Task ID: REVERT-TABLE-DESIGN
+Agent: main (Super Z)
+Task: Revert route.ts + arabic-text.ts to state BEFORE commit 3fe33ad (before table-design changes), per user request: "رجعه لقبل 3 كمنتات قبل ما تغير تصميم الجدول"
+
+Work Log:
+- Inspected git history: identified commit 3fe33ad ("fix(pdf): Row 2 Cell 3 — render duration as separate text() calls") as the start of the table-design changes the user is unhappy with
+- Restored src/app/api/generate-pdf/route.ts and src/lib/arabic-text.ts from commit e13f000 (parent of 3fe33ad) using `git show e13f000:<file> > <file>`
+- Deleted 56 obsolete test/debug scripts under scripts/ (test-arabic-pdf.js, test-row2.js, test-v4.js, test-rtl-approaches.js, etc.) — these were created during the failed v2/v3/v4 bidi-pipeline experiments and are no longer needed
+- Cleaned download/ folder — removed ~120 debug PDFs/PNGs (test-arabic.pdf, test-row2.pdf, all crop-*.png, all gen-*.png, all ref-*.png, all side-by-side-*.png, etc.) so the user only sees the new verification PDF
+- Created scripts/verify-reverted-pdf.ts — runs the restored /api/generate-pdf POST handler directly via bun, saves download/reverted-design.pdf + download/reverted-design.png + download/reverted-design-hires.png
+- Ran the verifier: PDF generated successfully (140KB)
+- Used VLM (z-ai vision, glm-5v-turbo) to inspect the rendered PDF
+
+Stage Summary:
+- Files restored to pre-3fe33ad state (746 lines in route.ts, 359 lines in arabic-text.ts — both matching commit e13f000 exactly)
+- arabic-text.ts now uses the original arabicReshape() + bidiGetDisplay() pipeline (NOT the v3 fontkit-only or v4 approaches)
+- Row 2 (Leave Duration) renders via safeArabicMixed(arDuration) — single text() call with NBSP-replaced spaces, NO split-rendering
+- Verification PDF + PNG saved at download/reverted-design.{pdf,png} and download/reverted-design-hires.png for user review
+- NO git commits made — waiting for user approval before pushing
+- NO deployment to Vercel — waiting for user approval

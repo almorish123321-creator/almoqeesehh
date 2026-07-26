@@ -181,36 +181,37 @@ export async function POST(req: NextRequest) {
     // ============================================================
 
     /**
-     * Render Arabic text using the v2 pipeline (fontkit-driven shaping).
+     * Render PURE Arabic text — mirrors Python's process_arabic_text():
+     *   reshaped = arabic_reshaper.reshape(text)
+     *   bidi_text = get_display(reshaped)
      *
-     * processArabicText() does:
-     *   1. bidi → visual word order (each word's characters are reversed)
-     *   2. split on whitespace, reverse each word → words back in logical
-     *      order, but WORD ORDER is visual
+     * The output is in VISUAL order with presentation forms, ready to render
+     * directly in PDFKit without pdfkit doing its own BiDi.
      *
-     * fontkit's ArabicShaper then applies GSUB features (init/medi/fina/liga)
-     * on each word to produce presentation forms, and reverses the glyphs
-     * (because RTL) so each word renders in correct visual order.
+     * IMPORTANT: pdfkit splits text at space characters and processes each
+     * run separately. For Arabic, this causes incorrect word order because
+     * each run is reversed but the runs are positioned left-to-right.
      *
-     * IMPORTANT: Replace spaces with NBSP before calling doc.text() so PDFKit
-     * treats the whole string as ONE run and doesn't split it on spaces and
-     * process each word separately. PDFKit's space-splitting would lose the
-     * visual word order we established.
+     * Fix: replace regular spaces (U+0020) with non-breaking spaces (U+00A0)
+     * so pdfkit treats the entire text as a single run. The non-breaking space
+     * is rendered as a regular space visually.
      *
-     * Use `align: "center"` or `align: "left"` (NOT "right" — pdfkit's
-     * align:"right" assumes LTR text and computes width wrong for Arabic).
-     * Use `lineBreak: false` to prevent auto-wrapping.
+     * To prevent pdfkit's internal BiDi (which would double-reverse visual-
+     * order text and produce garbage):
+     *   - Use `align: "center"` or `align: "left"` (NOT "right" — triggers RTL)
+     *   - Use `lineBreak: false`
+     *   - Do NOT use `features: ["rtla"]`
      */
     const drawTextAr = (text: string, x: number, y: number, options: any = {}) => {
       const fontToUse = options.weight === "bold" ? fontArBold : fontArReg;
       if (options.fontSize) doc.fontSize(options.fontSize);
       if (options.color) doc.fillColor(options.color);
 
-      // Process Arabic text: bidi → reverse each word → ready for fontkit
+      // Process Arabic text: reshape + bidi → visual order
       const processed = processArabicText(text);
-      // Replace ASCII spaces with NBSP to prevent pdfkit run splitting
+      // Replace spaces with non-breaking spaces to prevent pdfkit run splitting
       const withNbsp = processed.replace(/ /g, "\u00A0");
-      // Force align to center or left (avoid "right" which pdfkit mishandles)
+      // Force align to center or left (avoid "right" which triggers RTL bidi)
       const userAlign = options.align || "center";
       const safeAlign = userAlign === "right" ? "center" : userAlign;
       const opts: any = { lineBreak: false, ...options, align: safeAlign };
@@ -225,12 +226,9 @@ export async function POST(req: NextRequest) {
     };
 
     /**
-     * Render MIXED Arabic + Latin/digits text — same pipeline as drawTextAr
-     * (safeArabicMixed === processArabicText). The bidi algorithm handles
-     * LTR runs (digits, Latin letters, brackets) correctly within RTL context.
-     *
-     * We replace ASCII spaces with NBSP to prevent pdfkit from splitting on
-     * spaces and losing the visual word order we established.
+     * Render MIXED Arabic + Latin/digits text — mirrors Python's safe_arabic_mixed():
+     * same pipeline as processArabicText but the bidi algorithm correctly
+     * handles LTR runs (digits, Latin letters, brackets) within RTL context.
      */
     const drawTextMixed = (text: string, x: number, y: number, options: any = {}) => {
       const fontToUse = options.weight === "bold" ? fontArBold : fontArReg;
@@ -238,11 +236,8 @@ export async function POST(req: NextRequest) {
       if (options.color) doc.fillColor(options.color);
 
       const processed = safeArabicMixed(text);
-      const withNbsp = processed.replace(/ /g, "\u00A0");
-      const userAlign = options.align || "center";
-      const safeAlign = userAlign === "right" ? "center" : userAlign;
-      const opts: any = { lineBreak: false, ...options, align: safeAlign };
-      doc.font(fontToUse).text(withNbsp, x, y, opts);
+      const opts: any = { align: "right", lineBreak: false, ...options };
+      doc.font(fontToUse).text(processed, x, y, opts);
     };
 
     // ============================================================
@@ -347,9 +342,8 @@ export async function POST(req: NextRequest) {
       });
 
       // --- Col 3: Arabic value (centered) ---
-      // Use Arabic font + fontkit-driven shaping for Arabic text.
-      // For dates and IDs (Latin digits only), use Times-Roman directly
-      // (avoids fontkit's RTL reversal flipping digits inside dates).
+      // Use Arabic font + reshape + bidi for Arabic text.
+      // For dates and IDs (Latin digits only), use Times-Roman directly.
       const cleanArText = String(valueAr || "").replace(/[^0-9A-Za-z\-/]/g, "").trim();
       const isArValueLatinOnly = cleanArText.length > 0 && /^[0-9A-Za-z\-/]+$/.test(cleanArText);
 
@@ -365,15 +359,14 @@ export async function POST(req: NextRequest) {
           color: textColor,
         });
       } else {
-        // Value contains Arabic — use NotoSansArabic.
-        // processArabicText replaces ASCII spaces with NBSP so PDFKit treats
-        // the whole string as one run; fontkit then shapes via GSUB and
-        // reverses glyphs (RTL) to produce correct visual order.
+        // Value contains Arabic — use NotoSansArabic + reshape + bidi
+        // Replace spaces with NBSP to prevent pdfkit run splitting
         doc.font(fontArReg).fontSize(CELL_FONT_SIZE).fillColor(textColor);
-        const withNbsp = processArabicText(valueAr || "");
+        const processed = processArabicText(valueAr || "");
+        const withNbsp = processed.replace(/ /g, "\u00A0");
+        const valArH = doc.heightOfString(withNbsp || "-", { width: COL_W[2] - 20 });
+        const valArY = y + (ROW_H - valArH) / 2;
         if (withNbsp) {
-          const valArH = doc.heightOfString(withNbsp, { width: COL_W[2] - 20 });
-          const valArY = y + (ROW_H - valArH) / 2;
           doc.text(withNbsp, COL_X[2] + 10, valArY, {
             width: COL_W[2] - 20,
             align: "center",
@@ -383,8 +376,6 @@ export async function POST(req: NextRequest) {
       }
 
       // --- Col 4: Arabic label (centered, bold) ---
-      // Use drawTextAr which handles NBSP + fontkit shaping + RTL reversal.
-      // We compute height with the processed (NBSP) text for accurate centering.
       doc.font(fontArBold).fontSize(CELL_FONT_SIZE).fillColor(labelColor);
       const processedLbl = processArabicText(labelAr);
       const lblArH = doc.heightOfString(processedLbl, { width: COL_W[3] - 20 });
@@ -411,29 +402,10 @@ export async function POST(req: NextRequest) {
 
       // Arabic duration word — always use "يوم" after the number
       // (no "يومان" or "أيام") and put the number first (right side in RTL)
-      //
-      // IMPORTANT BIDI WORKAROUND:
-      // Mixing Arabic letters and Latin digits in a single PDFKit text()
-      // call causes PDFKit's internal bidi to reverse digit runs in
-      // unpredictable ways. Instead of fighting bidi, we render the Arabic
-      // duration as SEPARATE text() calls at fixed X positions:
-      //   - "( " + start_date + " إلى " + end_date + " )" on the LEFT half
-      //     of the cell (Arabic text rendered via processArabicText which
-      //     applies arabicReshape + bidiGetDisplay — but since this part is
-      //     pure Arabic + digits, the digit runs come out correct).
-      //   - "1 يوم" on the RIGHT half of the cell.
-      //
-      // Wait — that still has the same problem. The real solution is to
-      // render each piece at its own X coordinate so PDFKit's bidi never
-      // sees mixed content in a single text() call:
-      //   Position 1 (left):  "( 2026-06-09 إلى 2026-06-09 )"
-      //   Position 2 (right): "1 يوم"
       const getArabicDuration = (count: number) => {
         return `${count} يوم`;
       };
-      // Note: durText is not used directly — the number and "يوم" are rendered
-      // as separate text() calls below to avoid PDFKit bidi issues.
-      void getArabicDuration; // suppress unused warning
+      const durText = getArabicDuration(payload.dayCount);
       const enDuration = `${payload.dayCount} day ( ${startDateFormatted} to ${endDateFormatted} )`;
 
       // Convert DD-MM-YYYY to YYYY-MM-DD for Arabic version (matches Python bot)
@@ -444,6 +416,7 @@ export async function POST(req: NextRequest) {
       };
       const startDateAr = toArabicDate(startDateFormatted);
       const endDateAr = toArabicDate(endDateFormatted);
+      const arDuration = `${durText} ( ${startDateAr} إلى ${endDateAr} )`;
 
       // Fill background #2b3d77
       doc.save();
@@ -489,117 +462,27 @@ export async function POST(req: NextRequest) {
         color: COLOR_WHITE,
       });
 
-      // Col 3: Arabic duration value — render as MULTIPLE SEPARATE text()
-      // calls to fully control visual layout and avoid fontkit reversing
-      // digits inside dates (fontkit's blanket RTL reverse flips everything
-      // in a run, including digits — that would garble "2026-06-15" into
-      // "51-60-6202").
-      //
-      // Layout (visually, left-to-right in the cell):
-      //   ┌──────────────────────────────────────────────────┐
-      //   │  ( 2026-06-09 إلى 2026-06-15 )    1 يوم         │
-      //   └──────────────────────────────────────────────────┘
-      //   ←—— dates part (5 sub-parts) ——→  ←— number part —→
-      //
-      // Each sub-part is rendered with its OWN doc.text() call:
-      //   - Latin/digit parts (parens, dates, count) → fontEnReg (Times-Roman),
-      //     rendered LTR as-is, no fontkit RTL reversal because script=latn
-      //   - Arabic parts ("إلى", "يوم") → fontArReg (NotoSansArabic),
-      //     processed via processArabicText (arabicReshape + bidiGetDisplay + NBSP)
-      //     so the glyphs are pre-shaped presentation forms in visual order.
-      //     fontkit detects script=arab → applies GSUB (no-op on presentation
-      //     forms) → reverses glyphs (RTL) so the visual order is correct.
-      const cellX = COL_X[2] + 10;
-      const cellW = COL_W[2] - 20;
-      const cellY = y;
-      const cellH = ROW_H;
-
+      // Col 3: Arabic duration value (mixed Arabic + digits) — use safeArabicMixed
+      // Replace spaces with NBSP to prevent pdfkit run splitting
       let arFontSize = CELL_FONT_SIZE;
-      const openParen = "(";
-      const closeParen = ")";
-      const date1Str = startDateAr; // "2026-06-09" (Latin only)
-      const date2Str = endDateAr;   // "2026-06-15" (Latin only)
-      const arabicIla = processArabicText("إلى");  // pre-shaped, bidi-ordered
-      const arabicYawm = processArabicText("يوم"); // pre-shaped, bidi-ordered
-      const numStr = String(payload.dayCount); // "1"
-
-      // Find a font size where all parts fit within the cell width.
-      // Use fontEnReg for Latin/digit parts, fontArReg for Arabic parts.
-      const gap = 3; // pt gap between sub-parts
-      const computeTotalWidth = (fs: number) => {
+      const processedArDuration = safeArabicMixed(arDuration);
+      const arDurationNbsp = processedArDuration.replace(/ /g, "\u00A0");
+      for (let fs = arFontSize; fs >= 9; fs--) {
         doc.font(fontArReg).fontSize(fs);
-        const wIla = doc.widthOfString(arabicIla);
-        const wYawm = doc.widthOfString(arabicYawm);
-        doc.font(fontEnReg).fontSize(fs);
-        return (
-          doc.widthOfString(openParen) +
-          doc.widthOfString(date1Str) +
-          wIla +
-          doc.widthOfString(date2Str) +
-          doc.widthOfString(closeParen) +
-          gap * 4 +
-          gap * 2 +
-          doc.widthOfString(numStr) +
-          wYawm +
-          gap
-        );
-      };
-      for (let fs = arFontSize; fs >= 8; fs--) {
-        if (computeTotalWidth(fs) <= cellW) {
+        if (doc.widthOfString(arDurationNbsp) <= COL_W[2] - 20) {
           arFontSize = fs;
           break;
         }
-        if (fs === 8) { arFontSize = 8; break; }
+        if (fs === 9) { arFontSize = 9; break; }
       }
       doc.font(fontArReg).fontSize(arFontSize).fillColor(COLOR_WHITE);
-
-      // Compute widths at the chosen font size
-      const wParen = doc.widthOfString(openParen);
-      // For date strings and num, use the same font size with fontEnReg
-      doc.font(fontEnReg).fontSize(arFontSize);
-      const wDate1 = doc.widthOfString(date1Str);
-      const wDate2 = doc.widthOfString(date2Str);
-      const wCloseParen = doc.widthOfString(closeParen);
-      const wNum = doc.widthOfString(numStr);
-      doc.font(fontArReg).fontSize(arFontSize);
-      const wIla = doc.widthOfString(arabicIla);
-      const wYawm = doc.widthOfString(arabicYawm);
-
-      // Total widths
-      const datesGroupW = wParen + wDate1 + wIla + wDate2 + wCloseParen + gap * 4;
-      const numberGroupW = wNum + wYawm + gap;
-      const totalW = datesGroupW + gap * 2 + numberGroupW;
-      const startX = cellX + (cellW - totalW) / 2; // center the whole thing
-
-      // Compute X positions for each sub-part (left-to-right visual order)
-      let cursorX = startX;
-      const xOpenParen = cursorX;       cursorX += wParen + gap;
-      const xDate1 = cursorX;            cursorX += wDate1 + gap;
-      const xIla = cursorX;              cursorX += wIla + gap;
-      const xDate2 = cursorX;            cursorX += wDate2 + gap;
-      const xCloseParen = cursorX;       cursorX += wCloseParen + gap * 2;
-      const xNum = cursorX;              cursorX += wNum + gap;
-      const xYawm = cursorX;
-
       const valArH = doc.currentLineHeight(true);
-      const valArY = cellY + (cellH - valArH) / 2;
-
-      // Render each sub-part as a separate text() call.
-      // Latin/digit parts use fontEnReg (Times-Roman) — LTR, no reversal.
-      // Arabic parts use fontArReg (NotoSansArabic) with pre-shaped text from
-      // processArabicText — fontkit shapes via GSUB (no-op on presentation
-      // forms) and reverses glyphs (RTL) so the visual order is correct.
-      doc.font(fontEnReg).fontSize(arFontSize).fillColor(COLOR_WHITE);
-      doc.text(openParen, xOpenParen, valArY, { align: "left", lineBreak: false });
-      doc.text(date1Str, xDate1, valArY, { align: "left", lineBreak: false });
-      doc.font(fontArReg).fontSize(arFontSize).fillColor(COLOR_WHITE);
-      doc.text(arabicIla, xIla, valArY, { align: "left", lineBreak: false });
-      doc.font(fontEnReg).fontSize(arFontSize).fillColor(COLOR_WHITE);
-      doc.text(date2Str, xDate2, valArY, { align: "left", lineBreak: false });
-      doc.text(closeParen, xCloseParen, valArY, { align: "left", lineBreak: false });
-      doc.text(numStr, xNum, valArY, { align: "left", lineBreak: false });
-      doc.font(fontArReg).fontSize(arFontSize).fillColor(COLOR_WHITE);
-      doc.text(arabicYawm, xYawm, valArY, { align: "left", lineBreak: false });
+      const valArY = y + (ROW_H - valArH) / 2;
+      doc.text(arDurationNbsp, COL_X[2] + 10, valArY, {
+        width: COL_W[2] - 20,
+        align: "center",
+        lineBreak: false,
+      });
 
       // Col 4: "مدة الإجازة" (NotoSansArabicBold, white)
       doc.font(fontArBold).fontSize(CELL_FONT_SIZE).fillColor(COLOR_WHITE);
@@ -790,40 +673,18 @@ export async function POST(req: NextRequest) {
       },
     );
 
-    // License number at y=930 (if present).
+    // License number at y=930 (if present) — uses safeArabicMixed
     // Format mirrors Python bot: "رقم الترخيص : {license_value}"
-    //
-    // We split the line into two parts and render each separately:
-    //   - "رقم الترخيص :" → fontArBold (Arabic) — fontkit shapes + reverses glyphs
-    //   - "{license_value}" (digits) → fontEnReg (Times-Roman) — LTR, no reversal
-    // This avoids fontkit's blanket RTL reverse flipping the digits.
+    // Replace spaces with NBSP to prevent pdfkit run splitting
     const hasLicense = !!(payload.licenseNumber && !emptyIndicators.has(payload.licenseNumber.trim()));
     if (hasLicense) {
-      const labelPart = "رقم الترخيص :";
-      const numPart = String(payload.licenseNumber);
-      const gap = 4; // pt gap between label and number
-
-      doc.font(fontArBold).fontSize(12);
-      const labelW = doc.widthOfString(processArabicText(labelPart));
-      doc.font(fontEnReg).fontSize(12);
-      const numW = doc.widthOfString(numPart);
-
-      const totalW = labelW + gap + numW;
-      const startX = 435 + (371 - totalW) / 2;
-
-      const valArH = doc.currentLineHeight(true);
-      const valArY = 930 + (12 - valArH) / 2; // approximate vertical centering
-
-      // Render Arabic label (fontkit will shape + reverse glyphs → visual order)
+      const licenseLine = `رقم الترخيص : ${payload.licenseNumber}`;
+      const processedLine = safeArabicMixed(licenseLine);
+      const withNbsp = processedLine.replace(/ /g, "\u00A0");
       doc.font(fontArBold).fontSize(12).fillColor(COLOR_BLACK);
-      doc.text(processArabicText(labelPart), startX, valArY, {
-        align: "left",
-        lineBreak: false,
-      });
-
-      // Render digits (LTR, no reversal)
-      doc.font(fontEnReg).fontSize(12).fillColor(COLOR_BLACK);
-      doc.text(numPart, startX + labelW + gap, valArY, {
+      const lineW = doc.widthOfString(withNbsp);
+      const startX = 435 + (371 - lineW) / 2;
+      doc.text(withNbsp, startX, 930, {
         align: "left",
         lineBreak: false,
       });
