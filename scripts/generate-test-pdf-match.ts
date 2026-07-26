@@ -8,6 +8,10 @@ import PDFDocument from "pdfkit";
 import QRCode from "qrcode";
 import path from "path";
 import fs from "fs";
+import {
+  processArabicText,
+  safeArabicMixed,
+} from "../src/lib/arabic-text";
 
 const ROOT = "/home/z/my-project";
 const FONT_AR_REG = path.join(ROOT, "public", "fonts", "NotoSansArabic-Regular.ttf");
@@ -68,12 +72,13 @@ async function generate() {
     const fontToUse = options.weight === "bold" ? fontArBold : fontArReg;
     if (options.fontSize) doc.fontSize(options.fontSize);
     if (options.color) doc.fillColor(options.color);
-    const cleanText = String(text).replace(/[\u200e\u200f\u200d\u200c]/g, "");
-    const opts: any = { align: "right", lineBreak: false, ...options };
-    if (!opts.features) {
-      opts.features = ["rtla"];
-    }
-    doc.font(fontToUse).text(cleanText, x, y, opts);
+    const processed = processArabicText(text);
+    // Replace spaces with non-breaking spaces to prevent pdfkit run splitting
+    const withNbsp = processed.replace(/ /g, "\u00A0");
+    const userAlign = options.align || "center";
+    const safeAlign = userAlign === "right" ? "center" : userAlign;
+    const opts: any = { lineBreak: false, ...options, align: safeAlign };
+    doc.font(fontToUse).text(withNbsp, x, y, opts);
   };
 
   const drawTextEn = (text: string, x: number, y: number, options: any = {}) => {
@@ -81,35 +86,6 @@ async function generate() {
     if (options.fontSize) doc.fontSize(options.fontSize);
     if (options.color) doc.fillColor(options.color);
     doc.font(fontToUse).text(text, x, y, options);
-  };
-
-  const renderVisualPieces = (opts: any) => {
-    const { pieces, x, y, width, height, fontSize, color, align = "center" } = opts;
-    if (pieces.length === 0) return;
-    const widths = pieces.map((p: any) => {
-      doc.font(p.font).fontSize(fontSize);
-      return doc.widthOfString(p.text);
-    });
-    const totalWidth = widths.reduce((a: number, b: number) => a + b, 0);
-    if (totalWidth <= 0) return;
-    const pieceLineHeights = pieces.map((p: any) => {
-      doc.font(p.font).fontSize(fontSize);
-      return doc.currentLineHeight(true);
-    });
-    const maxTextH = Math.max(...pieceLineHeights);
-    const blockTop = y + (height - maxTextH) / 2;
-    let cursorX: number;
-    if (align === "center") cursorX = x + (width - totalWidth) / 2;
-    else if (align === "right") cursorX = x + width - totalWidth;
-    else cursorX = x;
-    for (let i = 0; i < pieces.length; i++) {
-      const piece = pieces[i];
-      const pieceLH = pieceLineHeights[i];
-      const pieceY = blockTop + (maxTextH - pieceLH) / 2;
-      doc.font(piece.font).fillColor(color).fontSize(fontSize);
-      doc.text(piece.text, cursorX, pieceY, { lineBreak: false });
-      cursorX += widths[i];
-    }
   };
 
   // HEADER LOGOS
@@ -181,18 +157,20 @@ async function generate() {
       });
     } else {
       doc.font(fontArReg).fontSize(CELL_FONT_SIZE).fillColor(textColor);
-      const valArH = doc.heightOfString(valueAr || "-", { width: COL_W[2] - 20 });
+      const processed = processArabicText(valueAr || "");
+      const withNbsp = processed.replace(/ /g, "\u00A0");
+      const valArH = doc.heightOfString(withNbsp || "-", { width: COL_W[2] - 20 });
       const valArY = y + (ROW_H - valArH) / 2;
-      const cleanText = String(valueAr || "").replace(/[\u200e\u200f\u200d\u200c]/g, "");
-      if (cleanText) {
-        doc.text(cleanText, COL_X[2] + 10, valArY, {
+      if (withNbsp) {
+        doc.text(withNbsp, COL_X[2] + 10, valArY, {
           width: COL_W[2] - 20, align: "center", lineBreak: false,
         });
       }
     }
 
     doc.font(fontArBold).fontSize(CELL_FONT_SIZE).fillColor(labelColor);
-    const lblArH = doc.heightOfString(labelAr, { width: COL_W[3] - 20 });
+    const processedLbl = processArabicText(labelAr);
+    const lblArH = doc.heightOfString(processedLbl, { width: COL_W[3] - 20 });
     const lblArY = y + (ROW_H - lblArH) / 2;
     drawTextAr(labelAr, COL_X[3] + 10, lblArY, {
       width: COL_W[3] - 20, align: "center", weight: "bold", fontSize: CELL_FONT_SIZE, color: labelColor,
@@ -245,21 +223,22 @@ async function generate() {
     });
 
     let arFontSize = CELL_FONT_SIZE;
+    const processedArDuration = safeArabicMixed(arDuration);
+    const arDurationNbsp = processedArDuration.replace(/ /g, "\u00A0");
     for (let fs = arFontSize; fs >= 9; fs--) {
       doc.font(fontArReg).fontSize(fs);
-      if (doc.widthOfString(arDuration) <= COL_W[2] - 20) { arFontSize = fs; break; }
+      if (doc.widthOfString(arDurationNbsp) <= COL_W[2] - 20) { arFontSize = fs; break; }
       if (fs === 9) { arFontSize = 9; break; }
     }
     doc.font(fontArReg).fontSize(arFontSize).fillColor(COLOR_WHITE);
     const valArH = doc.currentLineHeight(true);
     const valArY = y + (ROW_H - valArH) / 2;
-    const arClean = arDuration.replace(/[\u200e\u200f\u200d\u200c]/g, "");
-    doc.text(arClean, COL_X[2] + 10, valArY, {
+    doc.text(arDurationNbsp, COL_X[2] + 10, valArY, {
       width: COL_W[2] - 20, align: "center", lineBreak: false,
     });
 
     doc.font(fontArBold).fontSize(CELL_FONT_SIZE).fillColor(COLOR_WHITE);
-    const lblArH = doc.heightOfString("مدة الإجازة", { width: COL_W[3] - 20 });
+    const lblArH = doc.heightOfString(processArabicText("مدة الإجازة"), { width: COL_W[3] - 20 });
     const lblArY = y + (ROW_H - lblArH) / 2;
     drawTextAr("مدة الإجازة", COL_X[3] + 10, lblArY, {
       width: COL_W[3] - 20, align: "center", weight: "bold", fontSize: CELL_FONT_SIZE, color: COLOR_WHITE,
@@ -288,7 +267,7 @@ async function generate() {
 
   // QR code
   try {
-    const qrData = `Check Report: ${payload.leaveNumber}`;
+    const qrData = `${payload.idNumber} - ${payload.leaveNumber} - 09-06-2026`;
     const qrImage = await QRCode.toDataURL(qrData, { width: 470, margin: 0 });
     doc.image(qrImage, 170, 743, { width: 119 });
   } catch (e) {}
@@ -302,10 +281,11 @@ async function generate() {
   drawTextEn("To check the report please visit Seha's official website", 35, 909, {
     width: 400, align: "center", weight: "bold", fontSize: 9, color: COLOR_BLACK,
   });
+  const inquiryUrl = `https://almoqeesehh.vercel.app/inquiries/slenquiry?gsl=${encodeURIComponent(payload.leaveNumber)}&id=${encodeURIComponent(payload.idNumber)}`;
   doc.fillColor(COLOR_LINK).font(fontEnBold).fontSize(11);
   doc.text("www.seha.sa/#/inquiries/slenquiry", 35, 924, {
     width: 400, align: "center",
-    link: "https://www.seha.sa/#/inquiries/slenquiry",
+    link: inquiryUrl,
     underline: true,
   });
 

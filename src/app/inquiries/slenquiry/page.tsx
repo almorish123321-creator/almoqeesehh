@@ -105,6 +105,27 @@ export default function SlenquiryPage() {
     return () => window.removeEventListener("resize", onResize);
   }, [menuOpen]);
 
+  // ============================================================
+  // 🆕 قراءة معلمات الرابط تلقائياً — عند فتح الصفحة من رابط
+  // يحوي gsl و id (مثل رابط الـ PDF المولد)، يتم تعبئة النموذج
+  // تلقائياً وتنفيذ الاستعلام فوراً لعرض تفاصيل الإجازة.
+  // ============================================================
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlGsl = params.get("gsl")?.trim() || "";
+    const urlId = params.get("id")?.trim() || "";
+    if (urlGsl && urlId) {
+      setServiceCode(urlGsl);
+      setNationalId(urlId);
+      // Trigger automatic query after state updates
+      setTimeout(() => {
+        const form = document.querySelector<HTMLFormElement>('form[data-form="slenquiry"]');
+        if (form) form.requestSubmit();
+      }, 200);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const code = serviceCode.trim();
@@ -388,7 +409,7 @@ export default function SlenquiryPage() {
               {error}
             </p>
 
-            <form id="inquiryForm" onSubmit={onSubmit}>
+            <form id="inquiryForm" data-form="slenquiry" onSubmit={onSubmit}>
               <div className="form-group">
                 <input
                   type="text"

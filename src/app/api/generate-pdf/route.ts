@@ -4,18 +4,22 @@
  * Response: application/pdf (the sick leave report)
  *
  * Generates a bilingual (Arabic/English) Sick Leave Report PDF that EXACTLY
- * matches the reference PDF (sickleave (2).pdf) in:
- *   - Page size: 841.89 × 1187.72 pt
- *   - Header logo positions (seha, kingdom, geometric)
- *   - Title font size & color (Arabic 22pt #306db5, English 18pt #2c3e77)
- *   - 4-column table layout (165 / 235 / 235 / 136 px wide)
- *   - Fixed row height 42.5 pt, border #d9d9d9 width 1.4
- *   - Label color #366fb5, value color #2c3e77, font size 13
- *   - Duration row bg #2b3d77 (white text)
- *   - Alternating row bg #f6f6f6
- *   - Footer divider at x=435, QR at (170,743,w=119)
- *   - Hospital logo at (575,746,w=122), names at y=866 / y=898
- *   - Bottom: time (34,961), date (34,983), national info (655,952,w=153)
+ * matches the reference PDF (sickleave (2).pdf).
+ *
+ * Arabic text handling mirrors the Python bot's `pdf_generator_updated.py`:
+ *   1. `arabicReshape()` — convert base letters to Presentation Forms
+ *      (isolated/initial/medial/final) based on context. This makes letters
+ *      connect properly in PDFKit (which doesn't ship HarfBuzz).
+ *   2. `bidiGetDisplay()` — apply Unicode Bidirectional Algorithm to reorder
+ *      characters for visual display.
+ *
+ * Together this reproduces Python's:
+ *   reshaped = arabic_reshaper.reshape(text)
+ *   bidi_text = get_display(reshaped)
+ *
+ * For pure Arabic text (labels, names): use processArabicText()
+ * For mixed text (e.g. "1 يوم ( 2026-06-09 إلى 2026-06-09 )"): use safeArabicMixed()
+ *   (same pipeline — bidi algorithm handles LTR runs correctly)
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -34,6 +38,10 @@ import {
   toISODate,
   toTimeDisplay,
 } from "@/lib/parser";
+import {
+  processArabicText,
+  safeArabicMixed,
+} from "@/lib/arabic-text";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -73,7 +81,6 @@ export interface ApiPayload {
 
 /**
  * Build the API payload (the same shape the Python bot sent to /api/bot/add_leave).
- * Mirrors bot/api_client.py send_leave_data_to_api.
  */
 export function buildApiPayload(data: LeaveFormData): ApiPayload {
   const filled: LeaveFormData = { ...DEFAULTS, ...data } as any;
@@ -138,7 +145,6 @@ export async function POST(req: NextRequest) {
     const arBoldExists = fs.existsSync(FONT_AR_BOLD);
     const fontArReg = arRegExists ? FONT_AR_REG : "Helvetica";
     const fontArBold = arBoldExists ? FONT_AR_BOLD : "Helvetica-Bold";
-    const useArabicFont = arRegExists && arBoldExists;
 
     const fontEnReg = "Times-Roman";
     const fontEnBold = "Times-Bold";
@@ -159,35 +165,57 @@ export async function POST(req: NextRequest) {
     // ============================================================
     // COLOR CONSTANTS — extracted from reference PDF via PyMuPDF
     // ============================================================
-    const COLOR_TITLE_AR = "#306db5";       // Arabic title
-    const COLOR_TITLE_EN = "#2c3e77";       // English subtitle
-    const COLOR_LABEL = "#366fb5";          // Table labels (En + Ar)
-    const COLOR_VALUE_DARK = "#2c3e77";     // Values on white/light rows
-    const COLOR_DURATION_BG = "#2b3d77";    // Duration row background (dark navy)
-    const COLOR_ALT_ROW_BG = "#f6f6f6";     // Alternating row background (light grey)
-    const COLOR_BORDER = "#d9d9d9";         // Table cell borders
+    const COLOR_TITLE_AR = "#306db5";
+    const COLOR_TITLE_EN = "#2c3e77";
+    const COLOR_LABEL = "#366fb5";
+    const COLOR_VALUE_DARK = "#2c3e77";
+    const COLOR_DURATION_BG = "#2b3d77";
+    const COLOR_ALT_ROW_BG = "#f6f6f6";
+    const COLOR_BORDER = "#d9d9d9";
     const COLOR_WHITE = "#ffffff";
     const COLOR_BLACK = "#000000";
-    const COLOR_LINK = "#0000ff";           // URL link color
+    const COLOR_LINK = "#0000ff";
 
     // ============================================================
     // TEXT RENDERERS
     // ============================================================
+
+    /**
+     * Render PURE Arabic text — mirrors Python's process_arabic_text():
+     *   reshaped = arabic_reshaper.reshape(text)
+     *   bidi_text = get_display(reshaped)
+     *
+     * The output is in VISUAL order with presentation forms, ready to render
+     * directly in PDFKit without pdfkit doing its own BiDi.
+     *
+     * IMPORTANT: pdfkit splits text at space characters and processes each
+     * run separately. For Arabic, this causes incorrect word order because
+     * each run is reversed but the runs are positioned left-to-right.
+     *
+     * Fix: replace regular spaces (U+0020) with non-breaking spaces (U+00A0)
+     * so pdfkit treats the entire text as a single run. The non-breaking space
+     * is rendered as a regular space visually.
+     *
+     * To prevent pdfkit's internal BiDi (which would double-reverse visual-
+     * order text and produce garbage):
+     *   - Use `align: "center"` or `align: "left"` (NOT "right" — triggers RTL)
+     *   - Use `lineBreak: false`
+     *   - Do NOT use `features: ["rtla"]`
+     */
     const drawTextAr = (text: string, x: number, y: number, options: any = {}) => {
       const fontToUse = options.weight === "bold" ? fontArBold : fontArReg;
       if (options.fontSize) doc.fontSize(options.fontSize);
       if (options.color) doc.fillColor(options.color);
-      // Remove invisible format controls (LRM/RLM/ZWJ/ZWNJ)
-      const cleanText = String(text).replace(/[\u200e\u200f\u200d\u200c]/g, "");
-      // Use `features: ["rtla"]` for pure Arabic text to enable proper RTL
-      // BiDi reordering in pdfkit. Without it, pdfkit splits Arabic text into
-      // overlapping runs at incorrect X positions.
-      // Also set `lineBreak: false` to prevent unwanted wrapping that rtla can trigger.
-      const opts: any = { align: "right", lineBreak: false, ...options };
-      if (useArabicFont && !opts.features) {
-        opts.features = ["rtla"];
-      }
-      doc.font(fontToUse).text(cleanText, x, y, opts);
+
+      // Process Arabic text: reshape + bidi → visual order
+      const processed = processArabicText(text);
+      // Replace spaces with non-breaking spaces to prevent pdfkit run splitting
+      const withNbsp = processed.replace(/ /g, "\u00A0");
+      // Force align to center or left (avoid "right" which triggers RTL bidi)
+      const userAlign = options.align || "center";
+      const safeAlign = userAlign === "right" ? "center" : userAlign;
+      const opts: any = { lineBreak: false, ...options, align: safeAlign };
+      doc.font(fontToUse).text(withNbsp, x, y, opts);
     };
 
     const drawTextEn = (text: string, x: number, y: number, options: any = {}) => {
@@ -198,60 +226,25 @@ export async function POST(req: NextRequest) {
     };
 
     /**
-     * Render multiple text pieces on a single line in VISUAL order.
-     * Each piece MUST be pure-direction (all-Arabic or all-Latin/digits).
+     * Render MIXED Arabic + Latin/digits text — mirrors Python's safe_arabic_mixed():
+     * same pipeline as processArabicText but the bidi algorithm correctly
+     * handles LTR runs (digits, Latin letters, brackets) within RTL context.
      */
-    const renderVisualPieces = (opts: {
-      pieces: { text: string; font: any }[];
-      x: number;
-      y: number;
-      width: number;
-      height: number;
-      fontSize: number;
-      color: string;
-      align?: "center" | "right" | "left";
-    }) => {
-      const { pieces, x, y, width, height, fontSize, color, align = "center" } = opts;
-      if (pieces.length === 0) return;
+    const drawTextMixed = (text: string, x: number, y: number, options: any = {}) => {
+      const fontToUse = options.weight === "bold" ? fontArBold : fontArReg;
+      if (options.fontSize) doc.fontSize(options.fontSize);
+      if (options.color) doc.fillColor(options.color);
 
-      const widths = pieces.map((p) => {
-        doc.font(p.font).fontSize(fontSize);
-        return doc.widthOfString(p.text);
-      });
-      const totalWidth = widths.reduce((a, b) => a + b, 0);
-      if (totalWidth <= 0) return;
-
-      const pieceLineHeights = pieces.map((p) => {
-        doc.font(p.font).fontSize(fontSize);
-        return doc.currentLineHeight(true);
-      });
-      const maxTextH = Math.max(...pieceLineHeights);
-      const blockTop = y + (height - maxTextH) / 2;
-
-      let cursorX: number;
-      if (align === "center") {
-        cursorX = x + (width - totalWidth) / 2;
-      } else if (align === "right") {
-        cursorX = x + width - totalWidth;
-      } else {
-        cursorX = x;
-      }
-
-      for (let i = 0; i < pieces.length; i++) {
-        const piece = pieces[i];
-        const pieceLH = pieceLineHeights[i];
-        const pieceY = blockTop + (maxTextH - pieceLH) / 2;
-        doc.font(piece.font).fillColor(color).fontSize(fontSize);
-        doc.text(piece.text, cursorX, pieceY, { lineBreak: false });
-        cursorX += widths[i];
-      }
+      const processed = safeArabicMixed(text);
+      const opts: any = { align: "right", lineBreak: false, ...options };
+      doc.font(fontToUse).text(processed, x, y, opts);
     };
 
     // ============================================================
     // HEADER LOGOS — exact positions from reference PDF
-    // Seha:    x=31,  y=34, w=159  (bbox 31,34,190,108)
-    // Kingdom: x=283, y=37, w=266  (bbox 283,37,550,164)
-    // Geometric: x=541, y=34, w=266 (bbox 541,34,808,147)
+    // Seha:    x=31,  y=34, w=159
+    // Kingdom: x=283, y=37, w=266
+    // Geometric: x=541, y=34, w=266
     // ============================================================
     if (fs.existsSync(SEHA_LOGO)) doc.image(SEHA_LOGO, 31, 34, { width: 159 });
     if (fs.existsSync(KINGDOM_TEXT)) doc.image(KINGDOM_TEXT, 283, 37, { width: 266 });
@@ -296,10 +289,11 @@ export async function POST(req: NextRequest) {
     const CELL_FONT_SIZE = 13;
     const BORDER_WIDTH = 1.4;
 
+    let currentY = TABLE_TOP;
+
     /**
      * Draw a single 4-column row with fixed height and proper borders.
      * Layout: [En label | En value | Ar value | Ar label]
-     * The two value cells (col 2 and col 3) share the same content for non-duration rows.
      */
     const drawRow = (
       labelEn: string,
@@ -312,17 +306,14 @@ export async function POST(req: NextRequest) {
     ) => {
       const y = currentY;
 
-      // Background fill (if specified)
       if (bgColor) {
         doc.save();
         doc.rect(TABLE_LEFT, y, TABLE_WIDTH, ROW_H).fill(bgColor);
         doc.restore();
       }
 
-      // Outer cell borders (#d9d9d9, width 1.4)
       doc.lineWidth(BORDER_WIDTH).strokeColor(COLOR_BORDER);
       doc.rect(TABLE_LEFT, y, TABLE_WIDTH, ROW_H).stroke();
-      // Internal column dividers
       doc.moveTo(COL_X[1], y).lineTo(COL_X[1], y + ROW_H).stroke();
       doc.moveTo(COL_X[2], y).lineTo(COL_X[2], y + ROW_H).stroke();
       doc.moveTo(COL_X[3], y).lineTo(COL_X[3], y + ROW_H).stroke();
@@ -351,8 +342,8 @@ export async function POST(req: NextRequest) {
       });
 
       // --- Col 3: Arabic value (centered) ---
-      // For dates and IDs, Arabic value = English value (both Latin digits)
-      // For pure Arabic content (name, nationality, etc.), use Arabic font
+      // Use Arabic font + reshape + bidi for Arabic text.
+      // For dates and IDs (Latin digits only), use Times-Roman directly.
       const cleanArText = String(valueAr || "").replace(/[^0-9A-Za-z\-/]/g, "").trim();
       const isArValueLatinOnly = cleanArText.length > 0 && /^[0-9A-Za-z\-/]+$/.test(cleanArText);
 
@@ -368,14 +359,15 @@ export async function POST(req: NextRequest) {
           color: textColor,
         });
       } else {
-        // Value contains Arabic — use NotoSansArabic
+        // Value contains Arabic — use NotoSansArabic + reshape + bidi
+        // Replace spaces with NBSP to prevent pdfkit run splitting
         doc.font(fontArReg).fontSize(CELL_FONT_SIZE).fillColor(textColor);
-        const valArH = doc.heightOfString(valueAr || "-", { width: COL_W[2] - 20 });
+        const processed = processArabicText(valueAr || "");
+        const withNbsp = processed.replace(/ /g, "\u00A0");
+        const valArH = doc.heightOfString(withNbsp || "-", { width: COL_W[2] - 20 });
         const valArY = y + (ROW_H - valArH) / 2;
-        // Use renderMixedRtlCell logic: render text without rtla (preserves digits)
-        const cleanText = String(valueAr || "").replace(/[\u200e\u200f\u200d\u200c]/g, "");
-        if (cleanText) {
-          doc.text(cleanText, COL_X[2] + 10, valArY, {
+        if (withNbsp) {
+          doc.text(withNbsp, COL_X[2] + 10, valArY, {
             width: COL_W[2] - 20,
             align: "center",
             lineBreak: false,
@@ -383,9 +375,10 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // --- Col 4: Arabic label (centered) ---
+      // --- Col 4: Arabic label (centered, bold) ---
       doc.font(fontArBold).fontSize(CELL_FONT_SIZE).fillColor(labelColor);
-      const lblArH = doc.heightOfString(labelAr, { width: COL_W[3] - 20 });
+      const processedLbl = processArabicText(labelAr);
+      const lblArH = doc.heightOfString(processedLbl, { width: COL_W[3] - 20 });
       const lblArY = y + (ROW_H - lblArH) / 2;
       drawTextAr(labelAr, COL_X[3] + 10, lblArY, {
         width: COL_W[3] - 20,
@@ -398,14 +391,10 @@ export async function POST(req: NextRequest) {
       currentY += ROW_H;
     };
 
-    let currentY = TABLE_TOP;
-
     // --- Row 1: Leave ID (white bg) ---
     drawRow("Leave ID", payload.leaveNumber, payload.leaveNumber, "رمز الإجازة");
 
     // --- Row 2: Leave Duration (dark navy bg #2b3d77, white text) ---
-    // Special row: English value = "1 day ( DD-MM-YYYY to DD-MM-YYYY )"
-    //              Arabic value = "يوم 1 ( YYYY-MM-DD إلى YYYY-MM-DD )"
     {
       const y = currentY;
       const startDateFormatted = normalizeDateToDDMMYYYY(payload.entryDate);
@@ -422,7 +411,7 @@ export async function POST(req: NextRequest) {
       const durText = getArabicDuration(payload.dayCount);
       const enDuration = `${payload.dayCount} day ( ${startDateFormatted} to ${endDateFormatted} )`;
 
-      // Convert DD-MM-YYYY to YYYY-MM-DD for Arabic version
+      // Convert DD-MM-YYYY to YYYY-MM-DD for Arabic version (matches Python bot)
       const toArabicDate = (ddmmyyyy: string) => {
         const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(ddmmyyyy);
         if (m) return `${m[3]}-${m[2]}-${m[1]}`;
@@ -437,7 +426,7 @@ export async function POST(req: NextRequest) {
       doc.rect(TABLE_LEFT, y, TABLE_WIDTH, ROW_H).fill(COLOR_DURATION_BG);
       doc.restore();
 
-      // Borders (still drawn on top of fill)
+      // Borders
       doc.lineWidth(BORDER_WIDTH).strokeColor(COLOR_BORDER);
       doc.rect(TABLE_LEFT, y, TABLE_WIDTH, ROW_H).stroke();
       doc.moveTo(COL_X[1], y).lineTo(COL_X[1], y + ROW_H).stroke();
@@ -457,8 +446,6 @@ export async function POST(req: NextRequest) {
       });
 
       // Col 2: English duration value (Times-Roman, white)
-      doc.font(fontEnReg).fontSize(CELL_FONT_SIZE).fillColor(COLOR_WHITE);
-      // Auto-shrink if too wide
       let enFontSize = CELL_FONT_SIZE;
       for (let fs = enFontSize; fs >= 9; fs--) {
         doc.font(fontEnReg).fontSize(fs);
@@ -478,12 +465,14 @@ export async function POST(req: NextRequest) {
         color: COLOR_WHITE,
       });
 
-      // Col 3: Arabic duration value (NotoSansArabic, white)
-      // Use full text without rtla — Arabic letter shaping via GSUB, BiDi handles order
+      // Col 3: Arabic duration value (mixed Arabic + digits) — use safeArabicMixed
+      // Replace spaces with NBSP to prevent pdfkit run splitting
       let arFontSize = CELL_FONT_SIZE;
+      const processedArDuration = safeArabicMixed(arDuration);
+      const arDurationNbsp = processedArDuration.replace(/ /g, "\u00A0");
       for (let fs = arFontSize; fs >= 9; fs--) {
         doc.font(fontArReg).fontSize(fs);
-        if (doc.widthOfString(arDuration) <= COL_W[2] - 20) {
+        if (doc.widthOfString(arDurationNbsp) <= COL_W[2] - 20) {
           arFontSize = fs;
           break;
         }
@@ -492,8 +481,7 @@ export async function POST(req: NextRequest) {
       doc.font(fontArReg).fontSize(arFontSize).fillColor(COLOR_WHITE);
       const valArH = doc.currentLineHeight(true);
       const valArY = y + (ROW_H - valArH) / 2;
-      const arClean = arDuration.replace(/[\u200e\u200f\u200d\u200c]/g, "");
-      doc.text(arClean, COL_X[2] + 10, valArY, {
+      doc.text(arDurationNbsp, COL_X[2] + 10, valArY, {
         width: COL_W[2] - 20,
         align: "center",
         lineBreak: false,
@@ -501,7 +489,7 @@ export async function POST(req: NextRequest) {
 
       // Col 4: "مدة الإجازة" (NotoSansArabicBold, white)
       doc.font(fontArBold).fontSize(CELL_FONT_SIZE).fillColor(COLOR_WHITE);
-      const lblArH = doc.heightOfString("مدة الإجازة", { width: COL_W[3] - 20 });
+      const lblArH = doc.heightOfString(processArabicText("مدة الإجازة"), { width: COL_W[3] - 20 });
       const lblArY = y + (ROW_H - lblArH) / 2;
       drawTextAr("مدة الإجازة", COL_X[3] + 10, lblArY, {
         width: COL_W[3] - 20,
@@ -554,8 +542,8 @@ export async function POST(req: NextRequest) {
     drawRow("Position", payload.jobTitleEn || "-", payload.jobTitle || "-", "المسمى الوظيفي");
 
     // ============================================================
-    // FOOTER — divider at x=435 (not center!)
-    // Left half (35..435):  QR code + verification text + URL
+    // FOOTER — divider at x=435
+    // Left half (35..435):  QR code + verification text + URL link
     // Right half (435..806): Hospital logo + Arabic name + English name + license
     // ============================================================
     const FOOTER_DIVIDER_X = 435;
@@ -567,9 +555,11 @@ export async function POST(req: NextRequest) {
     doc.moveTo(FOOTER_DIVIDER_X, FOOTER_TOP).lineTo(FOOTER_DIVIDER_X, FOOTER_BOTTOM).stroke();
 
     // --- LEFT HALF: QR code + verification text ---
-    // QR code at x=170, y=743, width=119 (centered in left half ~225)
+    // QR code at x=170, y=743, width=119
+    // QR data mirrors Python bot: "{id_number} - {leave_id} - {issue_date_normalized}"
     try {
-      const qrData = `Check Report: ${payload.leaveNumber}`;
+      const issueDateForQR = normalizeDateToDDMMYYYY(payload.entryDate);
+      const qrData = `${payload.idNumber} - ${payload.leaveNumber} - ${issueDateForQR}`;
       const qrImage = await QRCode.toDataURL(qrData, { width: 470, margin: 0 });
       doc.image(qrImage, 170, 743, { width: 119 });
     } catch (e) {
@@ -577,8 +567,6 @@ export async function POST(req: NextRequest) {
     }
 
     // Arabic verification text — two lines
-    // Line 1: "للتحقق من بيانات التقرير يرجى التأكد من زيارة موقع منصة صحة"
-    // Line 2: "الرسمي"
     drawTextAr(
       "للتحقق من بيانات التقرير يرجى التأكد من زيارة موقع منصة صحة",
       35,
@@ -619,11 +607,16 @@ export async function POST(req: NextRequest) {
     );
 
     // URL link (size 11, Times-Bold, blue #0000ff, underlined)
+    // The URL includes GSL+ID as query params so clicking it opens the inquiry
+    // page with the leave details pre-loaded (matches user's request:
+    // "اريد منك ايضا ان تجعل البيانات ترتفع للاستعلام وعند الضغط على رابط
+    //  الملف المولد يدخلني الى الاستعلام يعني يكون زي الارتباط التشعبي")
+    const inquiryUrl = `https://almoqeesehh.vercel.app/inquiries/slenquiry?gsl=${encodeURIComponent(payload.leaveNumber)}&id=${encodeURIComponent(payload.idNumber)}`;
     doc.fillColor(COLOR_LINK).font(fontEnBold).fontSize(11);
     doc.text("www.seha.sa/#/inquiries/slenquiry", 35, 924, {
       width: 400,
       align: "center",
-      link: "https://www.seha.sa/#/inquiries/slenquiry",
+      link: inquiryUrl,
       underline: true,
     });
 
@@ -665,27 +658,20 @@ export async function POST(req: NextRequest) {
       },
     );
 
-    // License number at y=930 (if present)
+    // License number at y=930 (if present) — uses safeArabicMixed
+    // Format mirrors Python bot: "رقم الترخيص : {license_value}"
+    // Replace spaces with NBSP to prevent pdfkit run splitting
     const hasLicense = !!(payload.licenseNumber && !emptyIndicators.has(payload.licenseNumber.trim()));
     if (hasLicense) {
-      // License number line — piece-by-piece approach for proper BiDi
-      // Format: "<number> : رقم الترخيص" (visual order: number on left, label on right)
-      const licensePieces = [
-        { text: payload.licenseNumber, font: fontArReg },
-        { text: " ", font: fontArReg },
-        { text: ":", font: fontArReg },
-        { text: " ", font: fontArReg },
-        { text: "رقم الترخيص", font: fontArReg },
-      ];
-      renderVisualPieces({
-        pieces: licensePieces,
-        x: 435,
-        y: 930,
-        width: 371,
-        height: 20,
-        fontSize: 12,
-        color: COLOR_BLACK,
-        align: "center",
+      const licenseLine = `رقم الترخيص : ${payload.licenseNumber}`;
+      const processedLine = safeArabicMixed(licenseLine);
+      const withNbsp = processedLine.replace(/ /g, "\u00A0");
+      doc.font(fontArBold).fontSize(12).fillColor(COLOR_BLACK);
+      const lineW = doc.widthOfString(withNbsp);
+      const startX = 435 + (371 - lineW) / 2;
+      doc.text(withNbsp, startX, 930, {
+        align: "left",
+        lineBreak: false,
       });
     }
 
