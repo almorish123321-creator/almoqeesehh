@@ -1,33 +1,46 @@
 /**
- * Arabic text processing for PDFKit — mirrors the Python bot's approach
- * ===================================================================
+ * Arabic text processing for PDFKit
+ * =================================
  *
- * Source: pdf_generator_updated (2).py
- *   import arabic_reshaper
- *   from bidi.algorithm import get_display
+ * STRATEGY (v3 — let fontkit handle shaping + RTL reversal)
+ * --------------------------------------------------------
  *
- *   reshaped = arabic_reshaper.reshape(text)
- *   bidi_text = get_display(reshaped)
+ * fontkit's ArabicShaper, when given Arabic base letters, will:
+ *   1. Detect script = 'arab' (via Unicode properties)
+ *   2. Apply GSUB features (ccmp, init, medi, fina, liga, rlig, rtlm)
+ *      on the font itself → produces presentation forms
+ *   3. Reverse the glyphs array (because direction = 'rtl')
  *
- * This module replicates that two-step pipeline in pure TypeScript:
+ * Step 3 is critical: fontkit reverses ALL glyphs in a single text run.
+ * For pure Arabic words, this is correct — the logical-order input becomes
+ * visual-order glyphs, ready for left-to-right rendering.
  *
- * 1. `arabicReshape()` — converts Arabic base letters (U+0600..U+06FF) to
- *    their Presentation Forms (U+FE70..U+FEFF) based on context
- *    (isolated/initial/medial/final). This makes letters connect properly
- *    in PDFKit, which doesn't ship HarfBuzz.
+ * For mixed text (e.g. "1 يوم"), fontkit still reverses everything, which
+ * is also correct: "1 يوم" → reversed glyphs → visually "يوم 1" on the page,
+ * which reads from right-to-left as "1 يوم" — exactly what we want.
  *
- * 2. `bidiGetDisplay()` — applies the Unicode Bidirectional Algorithm to
- *    reorder characters for visual display. Uses `bidi-js` package.
+ * PROBLEM: PDFKit's layout() splits text on space characters (' ' and '\t')
+ * and processes each chunk separately. For Arabic, this would mean each
+ * word is shaped correctly, but the WORDS would be laid out in the order
+ * given (LTR), not in RTL visual order.
  *
- * The combined pipeline preserves:
- *   - Arabic letter shaping (connected forms)
- *   - Correct RTL visual order for Arabic words
- *   - LTR order for Latin digits, brackets, slashes, hyphens
- *   - Mixed Arabic + Latin text (e.g. "2 يوم (2025-01-01 إلى 2025-01-02)")
+ * SOLUTION: Replace ASCII spaces with NBSP (\u00A0) so PDFKit treats the
+ * whole text as ONE run. Then fontkit shapes all words and reverses all
+ * glyphs in one pass, producing the correct visual order.
  *
- * LRM marks (U+200E) are stripped before processing — bidi-js handles
- * direction without them, and PDFKit's Times font would render them as
- * tofu boxes.
+ * For mixed text with Latin/digits mixed with Arabic (e.g. Row 2:
+ * "( 2026-06-09 إلى 2026-06-15 ) 7 يوم"), fontkit's blanket reverse
+ * also flips the digits inside dates, producing garbled output like
+ * "51-60-6202". For these cases, the caller must split the text manually
+ * and render each piece (Arabic piece via drawTextAr, Latin piece via
+ * drawTextEn) at computed X positions — see the Row 2 handler in
+ * route.ts.
+ *
+ * SUMMARY:
+ *   - processArabicText(text) = text.replace(/ /g, '\u00A0')
+ *   - The caller passes the result to doc.text() with lineBreak:false
+ *   - fontkit handles shaping + RTL reversal automatically
+ *   - For mixed Arabic+digit text, the caller must split manually
  */
 
 import bidiFactory from "bidi-js";
@@ -35,10 +48,10 @@ import bidiFactory from "bidi-js";
 const bidi = bidiFactory();
 
 // ============================================================
-// Arabic Presentation Forms mapping
-// Based on arabic-reshaper Python library by Louy Alakkad
-// Source: https://github.com/louy/Javascript-Arabic-Reshaper
+// Arabic Presentation Forms mapping (kept for backward compat)
 // ============================================================
+// These are no longer used in the main pipeline. fontkit handles
+// shaping via GSUB on the font itself.
 
 interface CharRep {
   isolated: number | null;
@@ -47,58 +60,54 @@ interface CharRep {
   final: number | null;
 }
 
-// Map of base Arabic letter code points → [isolated, initial, medial, final]
-// Format: [code, isolated, initial, medial, final] (null = not applicable)
 const CHARS_MAP: Record<number, CharRep> = {};
 
 const charsArray: [number, number | null, number | null, number | null, number | null][] = [
-  [0x0621, 0xFE80, null, null, null], // HAMZA
-  [0x0622, 0xFE81, null, null, 0xFE82], // ALEF_MADDA
-  [0x0623, 0xFE83, null, null, 0xFE84], // ALEF_HAMZA_ABOVE
-  [0x0624, 0xFE85, null, null, 0xFE86], // WAW_HAMZA
-  [0x0625, 0xFE87, null, null, 0xFE88], // ALEF_HAMZA_BELOW
-  [0x0626, 0xFE89, 0xFE8B, 0xFE8C, 0xFE8A], // YEH_HAMZA
-  [0x0627, 0xFE8D, null, null, 0xFE8E], // ALEF
-  [0x0628, 0xFE8F, 0xFE91, 0xFE92, 0xFE90], // BEH
-  [0x0629, 0xFE93, null, null, 0xFE94], // TEH_MARBUTA
-  [0x062A, 0xFE95, 0xFE97, 0xFE98, 0xFE96], // TEH
-  [0x062B, 0xFE99, 0xFE9B, 0xFE9C, 0xFE9A], // THEH
-  [0x062C, 0xFE9D, 0xFE9F, 0xFEA0, 0xFE9E], // JEEM
-  [0x062D, 0xFEA1, 0xFEA3, 0xFEA4, 0xFEA2], // HAH
-  [0x062E, 0xFEA5, 0xFEA7, 0xFEA8, 0xFEA6], // KHAH
-  [0x062F, 0xFEA9, null, null, 0xFEAA], // DAL
-  [0x0630, 0xFEAB, null, null, 0xFEAC], // THAL
-  [0x0631, 0xFEAD, null, null, 0xFEAE], // REH
-  [0x0632, 0xFEAF, null, null, 0xFEB0], // ZAIN
-  [0x0633, 0xFEB1, 0xFEB3, 0xFEB4, 0xFEB2], // SEEN
-  [0x0634, 0xFEB5, 0xFEB7, 0xFEB8, 0xFEB6], // SHEEN
-  [0x0635, 0xFEB9, 0xFEBB, 0xFEBC, 0xFEBA], // SAD
-  [0x0636, 0xFEBD, 0xFEBF, 0xFEC0, 0xFEBE], // DAD
-  [0x0637, 0xFEC1, 0xFEC3, 0xFEC4, 0xFEC2], // TAH
-  [0x0638, 0xFEC5, 0xFEC7, 0xFEC8, 0xFEC6], // ZAH
-  [0x0639, 0xFEC9, 0xFECB, 0xFECC, 0xFECA], // AIN
-  [0x063A, 0xFECD, 0xFECF, 0xFED0, 0xFECE], // GHAIN
-  [0x0641, 0xFED1, 0xFED3, 0xFED4, 0xFED2], // FEH
-  [0x0642, 0xFED5, 0xFED7, 0xFED8, 0xFED6], // QAF
-  [0x0643, 0xFED9, 0xFEDB, 0xFEDC, 0xFEDA], // KAF
-  [0x0644, 0xFEDD, 0xFEDF, 0xFEE0, 0xFEDE], // LAM
-  [0x0645, 0xFEE1, 0xFEE3, 0xFEE4, 0xFEE2], // MEEM
-  [0x0646, 0xFEE5, 0xFEE7, 0xFEE8, 0xFEE6], // NOON
-  [0x0647, 0xFEE9, 0xFEEB, 0xFEEC, 0xFEEA], // HEH
-  [0x0648, 0xFEED, null, null, 0xFEEE], // WAW
-  [0x0649, 0xFEEF, null, null, 0xFEF0], // ALEF_MAKSURA
-  [0x064A, 0xFEF1, 0xFEF3, 0xFEF4, 0xFEF2], // YEH
-  // Ligatures
-  [0x0640, 0x0640, 0x0640, 0x0640, 0x0640], // TATWEEL
-  // Diacritics (shadda, fatha, etc.) — kept as-is
-  [0x064B, 0x064B, null, null, null], // FATHATAN
-  [0x064C, 0x064C, null, null, null], // DAMMATAN
-  [0x064D, 0x064D, null, null, null], // KASRATAN
-  [0x064E, 0x064E, null, null, null], // FATHA
-  [0x064F, 0x064F, null, null, null], // DAMMA
-  [0x0650, 0x0650, null, null, null], // KASRA
-  [0x0651, 0x0651, null, null, null], // SHADDA
-  [0x0652, 0x0652, null, null, null], // SUKUN
+  [0x0621, 0xFE80, null, null, null],
+  [0x0622, 0xFE81, null, null, 0xFE82],
+  [0x0623, 0xFE83, null, null, 0xFE84],
+  [0x0624, 0xFE85, null, null, 0xFE86],
+  [0x0625, 0xFE87, null, null, 0xFE88],
+  [0x0626, 0xFE89, 0xFE8B, 0xFE8C, 0xFE8A],
+  [0x0627, 0xFE8D, null, null, 0xFE8E],
+  [0x0628, 0xFE8F, 0xFE91, 0xFE92, 0xFE90],
+  [0x0629, 0xFE93, null, null, 0xFE94],
+  [0x062A, 0xFE95, 0xFE97, 0xFE98, 0xFE96],
+  [0x062B, 0xFE99, 0xFE9B, 0xFE9C, 0xFE9A],
+  [0x062C, 0xFE9D, 0xFE9F, 0xFEA0, 0xFE9E],
+  [0x062D, 0xFEA1, 0xFEA3, 0xFEA4, 0xFEA2],
+  [0x062E, 0xFEA5, 0xFEA7, 0xFEA8, 0xFEA6],
+  [0x062F, 0xFEA9, null, null, 0xFEAA],
+  [0x0630, 0xFEAB, null, null, 0xFEAC],
+  [0x0631, 0xFEAD, null, null, 0xFEAE],
+  [0x0632, 0xFEAF, null, null, 0xFEB0],
+  [0x0633, 0xFEB1, 0xFEB3, 0xFEB4, 0xFEB2],
+  [0x0634, 0xFEB5, 0xFEB7, 0xFEB8, 0xFEB6],
+  [0x0635, 0xFEB9, 0xFEBB, 0xFEBC, 0xFEBA],
+  [0x0636, 0xFEBD, 0xFEBF, 0xFEC0, 0xFEBE],
+  [0x0637, 0xFEC1, 0xFEC3, 0xFEC4, 0xFEC2],
+  [0x0638, 0xFEC5, 0xFEC7, 0xFEC8, 0xFEC6],
+  [0x0639, 0xFEC9, 0xFECB, 0xFECC, 0xFECA],
+  [0x063A, 0xFECD, 0xFECF, 0xFED0, 0xFECE],
+  [0x0641, 0xFED1, 0xFED3, 0xFED4, 0xFED2],
+  [0x0642, 0xFED5, 0xFED7, 0xFED8, 0xFED6],
+  [0x0643, 0xFED9, 0xFEDB, 0xFEDC, 0xFEDA],
+  [0x0644, 0xFEDD, 0xFEDF, 0xFEE0, 0xFEDE],
+  [0x0645, 0xFEE1, 0xFEE3, 0xFEE4, 0xFEE2],
+  [0x0646, 0xFEE5, 0xFEE7, 0xFEE8, 0xFEE6],
+  [0x0647, 0xFEE9, 0xFEEB, 0xFEEC, 0xFEEA],
+  [0x0648, 0xFEED, null, null, 0xFEEE],
+  [0x0649, 0xFEEF, null, null, 0xFEF0],
+  [0x064A, 0xFEF1, 0xFEF3, 0xFEF4, 0xFEF2],
+  [0x0640, 0x0640, 0x0640, 0x0640, 0x0640],
+  [0x064B, 0x064B, null, null, null],
+  [0x064C, 0x064C, null, null, null],
+  [0x064D, 0x064D, null, null, null],
+  [0x064E, 0x064E, null, null, null],
+  [0x064F, 0x064F, null, null, null],
+  [0x0650, 0x0650, null, null, null],
+  [0x0651, 0x0651, null, null, null],
+  [0x0652, 0x0652, null, null, null],
 ];
 
 for (const [code, iso, init, med, fin] of charsArray) {
@@ -110,14 +119,11 @@ for (const [code, iso, init, med, fin] of charsArray) {
   };
 }
 
-// ============================================================
-// Ligatures — LAM-ALEF combinations
-// ============================================================
 const LAM_ALEF_LIGATURES: Record<string, number> = {
-  "\u0644\u0622": 0xFEF5, // LAM + ALEF_MADDA = 0xFEF5 (isolated)
-  "\u0644\u0623": 0xFEF7, // LAM + ALEF_HAMZA_ABOVE = 0xFEF7
-  "\u0644\u0625": 0xFEF9, // LAM + ALEF_HAMZA_BELOW = 0xFEF9
-  "\u0644\u0627": 0xFEFB, // LAM + ALEF = 0xFEFB
+  "\u0644\u0622": 0xFEF5,
+  "\u0644\u0623": 0xFEF7,
+  "\u0644\u0625": 0xFEF9,
+  "\u0644\u0627": 0xFEFB,
 };
 
 const LAM_ALEF_LIGATURES_FINAL: Record<string, number> = {
@@ -126,10 +132,6 @@ const LAM_ALEF_LIGATURES_FINAL: Record<string, number> = {
   "\u0644\u0625": 0xFEFA,
   "\u0644\u0627": 0xFEFC,
 };
-
-// ============================================================
-// Helper functions
-// ============================================================
 
 function isArabicLetter(code: number): boolean {
   return (
@@ -142,24 +144,6 @@ function isDiacritic(code: number): boolean {
   return code >= 0x064B && code <= 0x0652;
 }
 
-/**
- * Get the character representation (presentation form) for an Arabic letter
- * based on its context (previous and next letters).
- *
- * Uses the Python `arabic_reshaper` library's "letter at position N" logic:
- * - prevLetter "connects forward" iff it has an INITIAL form
- *   (letters like ALEF, DAL, REH, ZAIN, WAW have only isolated+final — they
- *   can connect backward but NOT forward).
- * - nextLetter is any Arabic letter (it counts as a connection target
- *   regardless of its forms, because the CURRENT letter is the one that
- *   needs an initial/medial form to connect forward).
- *
- * Form selection for the current letter:
- * - medial:    prev connects forward (has initial form) AND next is Arabic letter
- * - final:     prev connects forward (has initial form)
- * - initial:   next is Arabic letter
- * - isolated:  otherwise
- */
 function getCharRep(
   current: number,
   prevCode: number | null,
@@ -167,200 +151,156 @@ function getCharRep(
 ): number {
   const rep = CHARS_MAP[current];
   if (!rep) return current;
-
-  // Previous letter connects forward iff it has an INITIAL form
   const prevConnectsForward = prevCode !== null
     && CHARS_MAP[prevCode] !== undefined
     && CHARS_MAP[prevCode].initial !== null;
-
-  // Next letter is any Arabic letter
   const nextIsArabicLetter = nextCode !== null && isArabicLetter(nextCode);
-
-  // Medial: prev connects forward AND next is Arabic letter
   if (prevConnectsForward && nextIsArabicLetter && rep.medial !== null) {
     return rep.medial;
   }
-  // Final: prev connects forward
   if (prevConnectsForward && rep.final !== null) {
     return rep.final;
   }
-  // Initial: next is Arabic letter
   if (nextIsArabicLetter && rep.initial !== null) {
     return rep.initial;
   }
-  // Isolated
   return rep.isolated ?? current;
 }
 
 /**
- * Apply Arabic letter shaping — convert base letters to presentation forms
- * based on context. Mirrors `arabic_reshaper.reshape()` from Python.
- *
- * IMPORTANT: We preserve LRM (U+200E) and RLM (U+200F) marks because they
- * are essential for controlling the visual order of mixed LTR/RTL runs
- * (e.g., ensuring "1 يوم" displays as "number on right, يوم on left" and
- * dates like "2026-06-09" don't get mirrored). These marks are zero-width
- * so they don't visually render — they only influence bidi-js reordering.
- * PDFKit renders them as zero-width characters, not as tofu boxes.
+ * Apply Arabic letter shaping — kept for backward compatibility but
+ * NOT used in the main pipeline anymore. fontkit handles shaping via
+ * GSUB features (ccmp, init, medi, fina, liga, rlig) on the font itself.
  */
 export function arabicReshape(text: string): string {
   if (!text) return "";
-
-  // Remove only ZWJ/ZWNJ (which pdfkit would render as boxes), but KEEP
-  // LRM/RLM marks (U+200E, U+200F) so bidi-js can use them for direction.
   let cleaned = "";
   for (const ch of text) {
     const code = ch.codePointAt(0)!;
-    if (code === 0x200d || code === 0x200c) {
-      continue;
-    }
+    if (code === 0x200d || code === 0x200c) continue;
     cleaned += ch;
   }
 
-  // Handle LAM-ALEF ligatures first
-  // The LAM-ALEF ligature has only TWO forms: isolated and final.
-  // - Isolated form (e.g., FEF9 for LAM-HAMZA-BELOW): used when ligature is at
-  //   start of word OR when previous letter doesn't connect forward (e.g., after
-  //   space, or after a letter like ALEF/DAL/REH that doesn't have initial form).
-  // - Final form (e.g., FEFA): used when previous letter connects forward
-  //   (has initial form like BEH, TEH, etc.) — meaning the ligature is in the
-  //   middle/end of a word preceded by a connecting letter.
-  //
-  // This matches Python's arabic_reshaper behavior:
-  //   "الإجازة" → LAM+ALEF-HAMZA-BELOW at start (prev=none/space) → ISOLATED FEF9
-  //   "بالإجازة" → BEH+LAM+ALEF-HAMZA-BELOW (prev=BEH which connects forward) → FINAL FEFA
   let afterLigatures = "";
   for (let i = 0; i < cleaned.length; i++) {
     const ch = cleaned[i];
     const nextCh = cleaned[i + 1];
     const pair = ch + (nextCh || "");
     if (i < cleaned.length - 1 && LAM_ALEF_LIGATURES[pair]) {
-      // Find previous non-diacritic character to decide isolated vs final
       let prevConnectsForward = false;
       for (let j = i - 1; j >= 0; j--) {
         const pc = cleaned[j].codePointAt(0)!;
         if (isDiacritic(pc)) continue;
         if (isArabicLetter(pc)) {
-          // Previous letter connects forward iff it has an initial form
           prevConnectsForward = CHARS_MAP[pc] !== undefined && CHARS_MAP[pc].initial !== null;
         }
-        break; // stop at first non-diacritic
+        break;
       }
-      // Use final form if prev connects forward, otherwise isolated
       const ligatureCode = prevConnectsForward
         ? LAM_ALEF_LIGATURES_FINAL[pair] || LAM_ALEF_LIGATURES[pair]
         : LAM_ALEF_LIGATURES[pair];
       afterLigatures += String.fromCodePoint(ligatureCode);
-      i++; // skip the ALEF
+      i++;
       continue;
     }
     afterLigatures += ch;
   }
 
-  // Now apply shaping to each Arabic letter based on context
   let result = "";
   for (let i = 0; i < afterLigatures.length; i++) {
     const ch = afterLigatures[i];
     const code = ch.codePointAt(0)!;
-
     if (!isArabicLetter(code) && !isDiacritic(code)) {
       result += ch;
       continue;
     }
-
-    // Find previous Arabic letter (skip diacritics and non-Arabic chars)
     let prevCode: number | null = null;
     for (let j = i - 1; j >= 0; j--) {
       const pc = afterLigatures[j].codePointAt(0)!;
       if (isDiacritic(pc)) continue;
-      if (isArabicLetter(pc)) {
-        prevCode = pc;
-      }
-      break; // stop at first non-diacritic
+      if (isArabicLetter(pc)) prevCode = pc;
+      break;
     }
-
-    // Find next Arabic letter (skip diacritics and non-Arabic chars)
     let nextCode: number | null = null;
     for (let j = i + 1; j < afterLigatures.length; j++) {
       const nc = afterLigatures[j].codePointAt(0)!;
       if (isDiacritic(nc)) continue;
-      if (isArabicLetter(nc)) {
-        nextCode = nc;
-      }
-      break; // stop at first non-diacritic
+      if (isArabicLetter(nc)) nextCode = nc;
+      break;
     }
-
-    // If it's a diacritic, keep as-is
     if (isDiacritic(code)) {
       result += ch;
       continue;
     }
-
-    // Get presentation form
     const shaped = getCharRep(code, prevCode, nextCode);
     result += String.fromCodePoint(shaped);
   }
-
   return result;
 }
 
 /**
  * Apply Unicode Bidirectional Algorithm to reorder text for visual display.
- * Mirrors `bidi.algorithm.get_display()` from Python.
+ * Uses bidi-js package's `getReorderedString()`.
  *
- * Uses bidi-js package's `getReorderedString()` which takes the full
- * embedding levels result (including paragraphs).
+ * NOTE: Not used in the main pipeline anymore — fontkit handles RTL
+ * reversal via the script-direction detection. Kept for backward compat
+ * and for callers that need raw bidi reordering.
  */
 export function bidiGetDisplay(text: string): string {
   if (!text) return "";
-
   try {
     const result = bidi.getEmbeddingLevels(text);
-    // If no RTL paragraphs, return as-is
     if (result.paragraphs.length === 0) return text;
     const hasRtl = result.paragraphs.some((p: any) => p.level % 2 === 1);
     if (!hasRtl) return text;
-
     const reordered = (bidi as any).getReorderedString(text, result);
     return reordered;
-  } catch (e) {
-    // If bidi fails, return original text (better than crashing)
+  } catch {
     return text;
   }
 }
 
 /**
- * Full Arabic text processing pipeline — matches the Python bot's
- * `process_arabic_text()` and the reference PDF exactly.
+ * Full Arabic text processing pipeline (v3 — fontkit-driven).
  *
- * Pipeline (mirrors pdf_generator_updated.py):
- *   1. reshaped = arabicReshape(text)        // Arabic letter shaping
- *   2. bidi_text = bidiGetDisplay(reshaped)   // Unicode BiDi reordering
+ * What we do here:
+ *   - Replace ASCII spaces with NBSP (\u00A0) so PDFKit treats the whole
+ *     text as ONE run and doesn't split it on spaces.
  *
- * The reference PDF (sickleave (2).pdf) stores text in VISUAL order
- * (reshaped + bidi-applied). pdfkit must receive visual-order text and
- * NOT do its own BiDi (which would double-reverse and produce garbage).
+ * What fontkit does (at PDFKit's encode() call):
+ *   - Detects script = 'arab' from Arabic code points
+ *   - Applies GSUB features (ccmp, init, medi, fina, liga, rlig, rtlm)
+ *     on each word to produce presentation forms (shaping)
+ *   - Reverses the glyph array (because direction = 'rtl') so the
+ *     glyphs are in visual order for left-to-right rendering
  *
- * To prevent pdfkit's internal BiDi:
- *   - Pass the text as a single string with `lineBreak: false`
- *   - Use `align: "left"` or `align: "center"` (NOT "right" — that triggers RTL)
- *   - Do NOT use `features: ["rtla"]`
+ * The caller passes the result to doc.text() with `lineBreak: false` and
+ * `align: "center"` (NOT "right" — pdfkit's align:"right" assumes LTR
+ * text and computes width wrong for Arabic).
+ *
+ * IMPORTANT for mixed Arabic+digit text:
+ *   fontkit's blanket RTL reverse also flips digits inside dates, so
+ *   "2026-06-15" would render as "51-60-6202" visually. For mixed text
+ *   (e.g. Row 2 with dates and counts), the caller MUST split the text
+ *   into pure-Arabic and pure-Latin/digit pieces, and render each piece
+ *   at a computed X position. See the Row 2 handler in route.ts.
  */
 export function processArabicText(text: string): string {
   if (!text) return "";
-  const reshaped = arabicReshape(text);
-  const display = bidiGetDisplay(reshaped);
-  return display;
+  // Replace ASCII spaces with NBSP to prevent PDFKit from splitting on
+  // spaces and laying out each word separately (which would lose the
+  // RTL word order established by fontkit's glyph reversal).
+  return text.replace(/ /g, "\u00A0");
 }
 
 /**
  * Safe mixed Arabic + Latin/digits text processing.
- * Mirrors the Python bot's `safe_arabic_mixed()` function.
+ * Same as processArabicText — fontkit handles shaping + RTL reversal.
  *
- * Same pipeline as processArabicText. The Unicode BiDi algorithm
- * correctly handles mixed-direction text by keeping LTR runs (digits,
- * Latin letters, brackets) in LTR order while reordering RTL runs
- * (Arabic words) for visual display.
+ * WARNING: For text containing dates or long digit runs, fontkit's RTL
+ * reversal will flip the digits, producing garbled output. In those
+ * cases, the caller MUST split the text and render each piece
+ * separately. See Row 2 handler in route.ts.
  */
 export function safeArabicMixed(text: string): string {
   return processArabicText(text);
