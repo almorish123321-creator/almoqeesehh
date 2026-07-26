@@ -1851,3 +1851,57 @@ Stage Summary:
 - ✓ النشر على Vercel Production نجح
 - ✓ رفع الكود على GitHub نجح
 - ✓ Production يعمل وتم اختباره
+
+---
+Task ID: arabic-pipeline-v3
+Agent: main (Super Z)
+Task: فحص PDF الناتج وإصلاح كل النصوص العربية الملخبطة (المشوهة) كما طلب المستخدم
+
+Work Log:
+- قرأتُ ملف `src/app/api/generate-pdf/route.ts` (847 سطر) و `src/lib/arabic-text.ts` (367 سطر)
+- بدأتُ Next.js dev server على port 3000
+- ولّدتُ PDF اختباري عبر POST /api/generate-pdf وحفظته في download/current-test.pdf
+- حوّلتُ PDF إلى PNG وحلّلتُه بصرياً عبر VLM
+- اكتشفتُ أن النصوص العربية مُشوّهة في صفوف متعددة:
+  * Row 8 (الجنسية): "أَرْوُسِيَّة" بدلاً من "السعودية"
+  * Row 9 (جهة العمل): "بي مستشفى الملك فهد التخصصي" بأحرف منفصلة
+  * Row 11 (المسمى الوظيفي): "قروب سبت كريستيانس" بدلاً من "استشاري طب الأسرة"
+- حللتُ السبب الجذري:
+  * pipeline القديم: arabicReshape() + bidiGetDisplay() ينتج presentation forms
+    في visual order
+  * لكن fontkit's ArabicShaper يحاول تطبيق GSUB features على presentation forms
+    مرة ثانية، مما يُنتج shapes خاطئة
+- كتبتُ pipeline جديد (v3 — fontkit-driven):
+  * processArabicText() الآن يكتفي باستبدال ASCII spaces بـ NBSP (\u00A0)
+    لمنع PDFKit من splitting على المسافات
+  * fontkit يتولى كل شيء: detect script=arab، تطبيق GSUB features على
+    NotoSansArabic (ccmp, init, medi, fina, liga, rlig, rtlm)، ثم عكس الـ glyphs
+    (RTL) لإنتاج visual order
+- في Row 2 (المدة): fontkit يعكس digits أيضاً، فيُدمر التواريخ
+  * حللتُ النص إلى 7 أجزاء منفصلة، كل جزء بـ script واحد
+  * Latin/digit parts تستخدم Times-Roman (LTR، لا reversal)
+  * Arabic parts تستخدم NotoSansArabic (fontkit يتولى shaping + reversal)
+- في الـ license line في footer: نفس المشكلة + نفس الحل (split Arabic عن digits)
+- أعدتُ توليد PDF اختباري محلياً وفحصته بـ VLM:
+  * جميع الـ 11 صفوف تعرض النص العربي بشكل صحيح
+  * لا توجد أحرف معكوسة أو منفصلة
+  * لا توجد digits معكوسة
+  * التواريخ تظهر بصيغة YYYY-MM-DD بشكل صحيح
+- رفع التعديلات على GitHub:
+  * commit: `6af66e8 fix(pdf): rewrite Arabic pipeline — let fontkit handle shaping + RTL reversal`
+  * `git push origin main` نجح
+- نشر على Vercel Production:
+  * `vercel deploy --prod --yes --token=...` نجح في 57 ثانية
+  * Production URL: https://almoqeesehh.vercel.app
+- اختبرتُ production API:
+  * POST /api/generate-pdf → 200 OK، PDF 140KB
+  * GET /inquiries/slenquiry → 200 OK
+  * GET /api/inquire?gsl=test&id=test → 200 OK (لا 503)
+  * فحص بصري للـ PDF الناتج: كل النصوص العربية سليمة ومثالية
+
+Stage Summary:
+- ✓ جميع النصوص العربية في PDF تظهر بشكل صحيح (متّصلة، بترتيب صحيح، بـ shapes صحيحة)
+- ✓ التواريخ والأرقام تظهر بـ LTR order صحيح داخل سياق RTL
+- ✓ الـ 11 صفوف في الجدول + الـ footer + الـ title كلها مثالية
+- ✓ النشر على Vercel Production نجح وتأكدت من عمله
+- ✓ الكود مرفوع على GitHub
