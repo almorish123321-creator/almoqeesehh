@@ -552,13 +552,19 @@ export async function POST(req: NextRequest) {
     doc.moveTo(FOOTER_DIVIDER_X, FOOTER_TOP).lineTo(FOOTER_DIVIDER_X, FOOTER_BOTTOM).stroke();
 
     // --- LEFT HALF: QR code + verification text ---
+    // Build the inquiry URL once — used both for the QR code AND the clickable link
+    const inquiryUrl = `https://almoqeesehh.vercel.app/inquiries/slenquiry?gsl=${encodeURIComponent(payload.leaveNumber)}&id=${encodeURIComponent(payload.idNumber)}`;
+
     // QR code at x=170, y=743, width=119
-    // QR data mirrors Python bot: "{id_number} - {leave_id} - {issue_date_normalized}"
+    // QR data now contains the actual inquiry URL (so scanning it with a phone
+    // opens the inquiry page directly), matching the user's request:
+    // "اريد اصلاحه ينقلني للاستعلامات"
     try {
-      const issueDateForQR = normalizeDateToDDMMYYYY(payload.entryDate);
-      const qrData = `${payload.idNumber} - ${payload.leaveNumber} - ${issueDateForQR}`;
-      const qrImage = await QRCode.toDataURL(qrData, { width: 470, margin: 0 });
+      const qrImage = await QRCode.toDataURL(inquiryUrl, { width: 470, margin: 0 });
       doc.image(qrImage, 170, 743, { width: 119 });
+      // Make the QR code itself clickable in the PDF (so clicking it on desktop
+      // also navigates to the inquiry page)
+      doc.link(170, 743, 119, 119, inquiryUrl);
     } catch (e) {
       // ignore QR errors
     }
@@ -604,18 +610,21 @@ export async function POST(req: NextRequest) {
     );
 
     // URL link (size 11, Times-Bold, blue #0000ff, underlined)
-    // The URL includes GSL+ID as query params so clicking it opens the inquiry
-    // page with the leave details pre-loaded (matches user's request:
-    // "اريد منك ايضا ان تجعل البيانات ترتفع للاستعلام وعند الضغط على رابط
-    //  الملف المولد يدخلني الى الاستعلام يعني يكون زي الارتباط التشعبي")
-    const inquiryUrl = `https://almoqeesehh.vercel.app/inquiries/slenquiry?gsl=${encodeURIComponent(payload.leaveNumber)}&id=${encodeURIComponent(payload.idNumber)}`;
+    // Display the actual inquiry URL (so the visible text matches where the
+    // link will navigate) and add an explicit `doc.link()` rectangle over
+    // the whole line so the link works reliably in every PDF viewer
+    // (Adobe Acrobat, browser viewers, mobile, etc.) — matching the user's
+    // request: "اريد اصلاحه ينقلني للاستعلامات"
     doc.fillColor(COLOR_LINK).font(fontEnBold).fontSize(11);
-    doc.text("www.seha.sa/#/inquiries/slenquiry", 35, 924, {
+    doc.text(inquiryUrl, 35, 924, {
       width: 400,
       align: "center",
       link: inquiryUrl,
       underline: true,
     });
+    // Explicit link rectangle over the entire URL line area — guarantees
+    // clickability even in PDF viewers that ignore the text-run link option
+    doc.link(35, 924, 400, 18, inquiryUrl);
 
     // --- RIGHT HALF: Hospital logo + name + license ---
     // Hospital logo at x=575, y=746, width=122
