@@ -1645,3 +1645,28 @@ Stage Summary:
   * API رفع البيانات
 - ⚠️ المستخدم شارك Vercel token في المحادثة (vcp_5AeWePp1...). يجب إلغاؤه فوراً من Vercel Dashboard → Settings → Tokens
 
+
+---
+Task ID: PDF-DURATION-FIX
+Agent: main (Super Z)
+Task: تعديل عرض مدة الإجازة في الـ PDF — حذف "يومان" و"أيام" وجعل الترتيب "رقم ثم يوم"
+
+Work Log:
+- قرأتُ تعليمات المستخدم: عدم استخدام "يومان" أو "أيام"، استخدام "يوم" دائماً بعد الرقم، وترتيب العرض: الرقم أولاً (على اليمين في RTL) ثم الكلمة
+- حدّدتُ موقع الكود في `src/app/api/generate-pdf/route.ts` السطر 403-410 (دالة `getArabicDuration`)
+- استبدلتُ الدالة المتعددة الحالات بدالة بسيطة ترجع `${count} يوم` دائماً
+- أعدتُ بناء المشروع عبر `npx next build` — نجح البناء
+- شغّلتُ السيرفر المحلي عبر `node .next/standalone/server.js` على المنفذ 3000
+- أنشأتُ سكريبت اختبار `scripts/test-pdf-duration.js` يختبر 3 حالات (1، 2، 5 أيام)
+- ولّدتُ 3 ملفات PDF في `download/` للتأكد من النتيجة
+- استخرجتُ النص عبر `pdftotext` للتأكد من الترتيب الصحيح
+
+Stage Summary:
+- ✓ التعديل نجح: النص العربي يعرض الآن "1 يوم" / "2 يوم" / "5 يوم" (رقم ثم كلمة)
+- ✓ لم تعد تظهر "يومان" أو "أيام" في أي حالة
+- ✓ الترتيب من اليمين: الرقم على اليمين، الكلمة على اليسار (كما طلب المستخدم)
+- ✓ البناء ناجح، PDFs الاختبارية محفوظة في:
+  - /home/z/my-project/download/test-duration-1-day.pdf
+  - /home/z/my-project/download/test-duration-2-days.pdf
+  - /home/z/my-project/download/test-duration-5-days.pdf
+- ملف التعديل الرئيسي: `src/app/api/generate-pdf/route.ts` السطر 403-407

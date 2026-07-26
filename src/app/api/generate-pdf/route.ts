@@ -400,13 +400,10 @@ export async function POST(req: NextRequest) {
       const startDateFormatted = normalizeDateToDDMMYYYY(payload.entryDate);
       const endDateFormatted = normalizeDateToDDMMYYYY(payload.exitDate);
 
-      // Arabic duration word
+      // Arabic duration word — always use "يوم" after the number
+      // (no "يومان" or "أيام") and put the number first (right side in RTL)
       const getArabicDuration = (count: number) => {
-        if (count === 0) return "يوم 0";
-        if (count === 1) return "يوم 1";
-        if (count === 2) return "يومان 2";
-        if (count >= 3 && count <= 10) return `أيام ${count}`;
-        return `يوم ${count}`;
+        return `${count} يوم`;
       };
       const durText = getArabicDuration(payload.dayCount);
       const enDuration = `${payload.dayCount} day ( ${startDateFormatted} to ${endDateFormatted} )`;
