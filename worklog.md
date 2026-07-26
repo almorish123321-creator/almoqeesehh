@@ -1793,3 +1793,61 @@ Stage Summary:
 - `src/app/api/inquire/route.ts` — إصلاح 503
 - `src/app/inquiries/slenquiry/page.tsx` — فصل عن لوحة الإدخال
 - `vercel.json` — إضافة DEMO_MODE=true
+
+---
+Task ID: PDF-BIDI-FIX-FINAL
+Agent: main (Super Z)
+Task: إصلاح تشويه التواريخ في Cell 3 من Row 2 + نشر على Vercel + رفع على GitHub
+
+Work Log:
+- استخدمتُ VLM (z-ai vision) لفحص الـ PDF بصرياً واكتشفت أن التواريخ تظهر معكوسة `90-60-6202` بدلاً من `2026-06-09`
+- حللتُ المشكلة جذرياً:
+  - bidi-js (في safeArabicMixed) يعكس ترتيب digit runs عندما يكون هناك Arabic letters
+  - PDFKit/fontkit يطبق bidi داخلي أيضاً ويعكس digit runs مرة أخرى
+  - النتيجة: التواريخ تظهر معكوسة بصرياً
+- جرّبتُ عدة حلول:
+  1. LRM/RLM marks: لم تحل المشكلة (bidi-js لا يحترمها بالكامل)
+  2. Arabic-Indic digits: حلّت التواريخ لكن المستخدم طلب Western digits
+  3. Pre-reverse التواريخ يدوياً: نتائج غير متوقعة
+  4. فصل النص إلى text() calls منفصلة: الحل النهائي ✓
+
+- الحل النهائي في `src/app/api/generate-pdf/route.ts`:
+  - تقسيم محتوى Cell 3 إلى 7 أجزاء منفصلة:
+    1. `(` — ASCII paren
+    2. `2026-06-09` — date 1 (Latin only)
+    3. `إلى` — Arabic (Presentation Form)
+    4. `2026-06-09` — date 2 (Latin only)
+    5. `)` — ASCII paren
+    6. `1` — number (Latin only)
+    7. `يوم` — Arabic (Presentation Form)
+  - كل جزء يُرسم بـ `doc.text()` منفصل عند X position محسوبة
+  - كل text() call يحتوي على script واحد فقط، فـ PDFKit bidi لا يعكس شيئاً
+  - التحكم الكامل في الـ layout visual عبر إحداثيات X
+
+- النتيجة النهائية:
+  - 1 يوم: `( 2026-06-09 إلى 2026-06-09 ) 1 يوم` ✓
+  - 2 يوم: `( 2026-06-09 إلى 2026-06-10 ) 2 يوم` ✓
+  - 5 يوم: `( 2026-06-09 إلى 2026-06-13 ) 5 يوم` ✓
+  - التواريخ YYYY-MM-DD ✓
+  - Western digits ✓
+  - الرقم قبل يوم (visual: 1 على اليمين، يوم على أقصى اليمين) ✓
+
+- نشر على Vercel:
+  - استخدمتُ VERCEL_TOKEN للمصادقة
+  - ربطتُ المشروع بـ project ID `prj_A9l4DGP4ERmL8D95FaVzVaIxJhla`
+  - `vercel deploy --prod` نجح في 41 ثانية
+  - Production URL: https://almoqeesehh.vercel.app
+  - اختبرتُ توليد PDF من Production: النتيجة صحيحة ✓
+
+- رفع على GitHub:
+  - استخدمتُ GitHub PAT للمصادقة
+  - `git push origin main` نجح
+  - آخر commit: `3fe33ad fix(pdf): Row 2 Cell 3 — render duration as separate text() calls`
+  - المستودع محدّث: https://github.com/almorish123321-creator/almoqeesehh
+
+Stage Summary:
+- ✓ Cell 3 من Row 2 الآن تعرض `( 2026-06-09 إلى 2026-06-09 ) 1 يوم` بشكل مثالي
+- ✓ التواريخ بصيغة YYYY-MM-DD مع Western digits
+- ✓ النشر على Vercel Production نجح
+- ✓ رفع الكود على GitHub نجح
+- ✓ Production يعمل وتم اختباره
