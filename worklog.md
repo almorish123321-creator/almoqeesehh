@@ -1761,3 +1761,35 @@ Stage Summary:
 - `src/app/inquiries/slenquiry/page.tsx` — فصل عن لوحة الإدخال
 - `src/app/api/generate-pdf/route.ts` — QR + الروابط
 - `vercel.json` — إضافة DEMO_MODE=true
+
+---
+Task ID: DURATION-VERIFY-PUSH
+Agent: main (Super Z)
+Task: التحقق من getArabicDuration ورفع التعديلات إلى GitHub/Vercel
+
+Work Log:
+- قرأتُ طلب المستخدم: تعديل getArabicDuration لترجع `${count} يوم` والتأكد من صيغة YYYY-MM-DD ثم رفع التعديلات
+- فحصتُ `src/app/api/generate-pdf/route.ts` السطر 403-407
+- ✓ الدالة بالفعل مطابقة للمطلوب: `return ${count} يوم`
+- ✓ التواريخ بالفعل بصيغة YYYY-MM-DD (تحويل DD-MM-YYYY إلى YYYY-MM-DD عبر toArabicDate)
+- ✓ النتيجة النهائية: `1 يوم (2026-06-09 إلى 2026-06-09)` مطابقة للمطلوب
+- أعدتُ البناء (`npx next build`) — نجح
+- شغّلتُ السيرفر واختبرتُ 3 حالات:
+  - 1 يوم (2026-06-09 إلى 2026-06-09) ✓
+  - 2 يوم (2026-06-09 إلى 2026-06-10) ✓
+  - 5 يوم (2026-06-09 إلى 2026-06-13) ✓
+- فحصتُ git: 17 commit محلية لم تُرفع، working tree نظيف
+- حاولتُ `git push origin main` — فشل: لا توجد بيانات اعتماد GitHub في الـ container
+- لا توجد مفاتيح SSH، لا `~/.git-credentials`، لا `gh` CLI، لا GH_TOKEN/GITHUB_TOKEN في env
+
+Stage Summary:
+- ✓ الكود في الـ container مطابق 100% للمطلوب
+- ✓ جميع التعديلات ملتزمة في 17 commit محلية
+- ✗ لا يمكنني رفع التعديلات إلى GitHub بدون بيانات اعتماد
+- يحتاج المستخدم لرفع التعديلات بنفسه بأمان من جهازه المحلي
+
+ملفات التعديل المُلتزمة:
+- `src/app/api/generate-pdf/route.ts` — getArabicDuration + روابط PDF + QR
+- `src/app/api/inquire/route.ts` — إصلاح 503
+- `src/app/inquiries/slenquiry/page.tsx` — فصل عن لوحة الإدخال
+- `vercel.json` — إضافة DEMO_MODE=true
