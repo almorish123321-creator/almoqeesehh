@@ -1905,3 +1905,60 @@ Stage Summary:
 - ✓ الـ 11 صفوف في الجدول + الـ footer + الـ title كلها مثالية
 - ✓ النشر على Vercel Production نجح وتأكدت من عمله
 - ✓ الكود مرفوع على GitHub
+
+---
+Task ID: PDF-ARABIC-V4
+Agent: general-purpose (main agent)
+Task: Fix garbled Arabic text in generated PDF — letters were disconnected and word order was wrong
+
+## Diagnosis
+
+Previous v3 pipeline only replaced ASCII spaces with NBSP and relied on fontkit to:
+1. Detect script = 'arab' from Arabic code points
+2. Apply GSUB features (ccmp/locl/isol/init/medi/fina/liga/rlig/rtla/rtlm) on the font
+3. Reverse the glyph array (because direction = 'rtl')
+
+Problem: PDFKit's `EmbeddedFont.layout()` splits text on space characters (' ', '\t') and processes each chunk SEPARATELY. Each chunk goes through `layoutCached()` which calls `font.layout(text)` once per chunk. So multi-word Arabic text gets each word shaped correctly, but PDFKit then emits the chunks in the original LTR order. Even with NBSP (which prevents space-splitting), fontkit's blanket RTL reversal flips ALL glyphs in a single text() call — which garbles mixed Arabic+digit text (e.g. "1 يوم" → "موي 1", or "2026-06-09" → "90-60-6202").
+
+## Fix (v4)
+
+Brought back the proven Python bot pipeline:
+
+1. `arabicReshape(text)` — convert base Arabic letters (U+0621..U+064A) to their presentation forms (isolated/initial/medial/final) based on context (prev/next letter connection). Also handles LAM-ALEF ligatures (U+FEF5..U+FEFC).
+
+2. `bidiGetDisplay(reshaped)` — apply Unicode Bidirectional Algorithm via `bidi-js` package. Produces a visually-ordered string where:
+   - Pure Arabic words have their characters reversed (so each word is in visual order)
+   - Multi-word Arabic strings have words in RTL visual order
+   - Mixed Arabic+digit text preserves LTR runs (digits stay in correct order)
+
+3. Replace ASCII spaces with NBSP (\u00A0) to prevent PDFKit from splitting on spaces.
+
+For mixed Arabic + Latin/digits text (Row 2 Leave Duration cell, License Number line), each piece (paren, date1, "إلى", date2, paren, number, "يوم") is rendered as a SEPARATE `doc.text()` call at a computed X position. This avoids fontkit's blanket RTL reversal flipping digits inside dates.
+
+## Verification
+
+Tested locally via `scripts/test-v4.js` and via the actual `/api/generate-pdf` route. Verified via VLM (`z-ai vision`) that:
+
+- ✅ Title "تقرير إجازة مرضية" renders correctly with connected letters
+- ✅ All 11 table rows show Arabic text with proper letter connectivity
+- ✅ Dates "2026-06-09" and "2026-06-15" display correctly (NOT reversed)
+- ✅ "7 يوم" displays correctly with connected letters in "يوم"
+- ✅ "محمد علي حسن", "سعودي", "د. أحمد حسن" all render correctly
+- ✅ Hospital name "مستشفى الملك فهد" renders with connected letters
+- ✅ License number "12345" displays correctly (NOT reversed)
+- ✅ Footer verification text renders correctly with connected letters
+
+## Deployment
+
+- Committed fix as `d45c1eb fix(pdf): Arabic pipeline v4 — arabicReshape + bidiGetDisplay`
+- Pushed to GitHub: almorish123321-creator/almoqeesehh@main
+- Vercel auto-deployed: deployment `dpl_GHQcnpDaXFSiSbamej3TyLzBVPpV` → PROMOTED to production
+- Production URL: https://almoqeesehh.vercel.app
+- Tested production endpoint with full payload → HTTP 200, 139465 bytes PDF
+- VLM verification on production PDF confirms all Arabic text renders correctly
+
+## Files Changed
+
+- `src/lib/arabic-text.ts` — restored arabicReshape() and bidiGetDisplay() functions; processArabicText() now runs full pipeline (reshape → bidi → NBSP)
+- `src/app/api/generate-pdf/route.ts` — Row 2 Leave Duration now pre-processes "إلى" and "يوم" via processArabicText before rendering; updated comments
+- `scripts/test-v4.js` — standalone test script for the new pipeline
