@@ -2173,3 +2173,38 @@ Stage Summary:
 - لوحة الإدارة (إدخال البيانات + توليد PDF): https://almoqeesehh.vercel.app/
 - صفحة الاستعلام: https://almoqeesehh.vercel.app/inquiry
 - صفحة الاستعلام مع كود مُعبّأ تلقائياً: https://almoqeesehh.vercel.app/inquiry?code=GSL2026XXXXXX
+
+---
+Task ID: QR-GENERAL-URL-ONLY
+Agent: main (Super Z)
+Task: تعديل QR ليفتح صفحة الاستعلامات العامة فقط (بدون ?code=) حسب طلب المستخدم
+
+Work Log:
+- المستخدم وضّح: المطلوب من مسح QR أن يفتح صفحة الاستعلامات العامة https://almoqeesehh.vercel.app/inquiry فقط — بدون أي كود مُعبّأ تلقائياً
+- src/lib/pdf-generator.ts: تغيير qrData من `${baseUrl}/inquiry?code=${gsl_code}` إلى `${baseUrl}/inquiry` فقط
+- src/app/inquiry/page.tsx: إرجاع الصفحة لحالتها الأصلية تماماً:
+  * حذف import useSearchParams + Suspense
+  * حذف دالة InquiryForm المنفصلة
+  * حذف useEffect الذي كان يقرأ ?code= من URL
+  * حذف nationalIdRef
+  * حذف Suspense wrapper في الـ default export
+  * الصفحة الآن مطابقة 100% للأصل (القاعدة الذهبية محفوظة)
+- npx next build نجح
+- git commit: b413c04 fix(qr): point QR to general inquiry URL only (no ?code= param)
+- git push نجح
+- Vercel deployment dpl_DMLHVoKoMJvvYU6K83c3s5hp6JMc → READY
+- اختبار الإنتاج:
+  * POST /api/generate-pdf → 200 OK، 131140 bytes PDF
+  * فك تشفير QR من PDF الإنتاجي: `https://almoqeesehh.vercel.app/inquiry` ✓ (بدون ?code=)
+  * VLM تحقق: الشرطة '/' ظاهرة، QR موجود، الرابط صحيح
+
+Stage Summary:
+- ✅ QR الآن يحتوي على `https://almoqeesehh.vercel.app/inquiry` فقط
+- ✅ مسح QR بأي كاميرا هاتف يفتح صفحة الاستعلامات العامة مباشرة
+- ✅ صفحة الاستعلام رجعت لحالتها الأصلية (لا auto-fill، لا useSearchParams، لا Suspense)
+- ✅ الشرطة '/' ما زالت تظهر بوضوح في "رقم الهوية / الإقامة"
+- ✅ النشر على Vercel Production نجح
+
+روابط الإنتاج النهائية:
+- لوحة الإدارة (إدخال البيانات + توليد PDF): https://almoqeesehh.vercel.app/
+- صفحة الاستعلامات العامة: https://almoqeesehh.vercel.app/inquiry
