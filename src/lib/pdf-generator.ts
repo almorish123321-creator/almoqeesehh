@@ -834,13 +834,13 @@ export async function generateSickLeavePDF(
 
   const leftCenterX = centerX / 2;
 
-  // QR — يفتح صفحة الاستعلام ويُعبّئ رمز الخدمة تلقائياً عند مسحه.
-  // The QR contains a URL that opens the inquiry page with the GSL code
-  // pre-filled in the service_code field. Scanning it with any phone camera
-  // opens the inquiry page directly.
+  // QR — عند مسحه بأي كاميرا هاتف يفتح صفحة الاستعلامات العامة مباشرة.
+  // The QR contains only the inquiry page URL (no code parameter) —
+  // scanning it opens the general inquiry page where the user types
+  // both their service code and ID manually.
   try {
     const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://almoqeesehh.vercel.app";
-    const qrData = `${baseUrl}/inquiry?code=${encodeURIComponent(patient.gsl_code)}`;
+    const qrData = `${baseUrl}/inquiry`;
     const qrImage = await QRCode.toDataURL(qrData);
     doc.image(qrImage, leftCenterX - 20, footerY, { width: 100 });
   } catch (qrErr) {
