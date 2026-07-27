@@ -15,12 +15,17 @@
  *  - `<script>` tag → React useEffect/useCallback
  *  - fetch URL `/inquiry/api` → `/api/inquiry` (Next.js API route)
  *
+ * دعم رمز QR: عند فتح الصفحة برابط يحوي ?code=GSL12345 (مثلاً من مسح
+ * الباركود في PDF)، يُعبّأ حقل "رمز الخدمة" تلقائياً بهذا الكود، ويُركّز
+ * المستخدم على حقل "رقم الهوية / الإقامة" ليُكمل الاستعلام.
+ *
  * كل الـ class names, الـ IDs, الـ styles المضمَّنة, الـ SVG data URIs,
  * الـ header, الـ footer, روابط الـ nav, صور الـ social, نصوص الـ copyright
  * — كلها منسوخة حرفياً من inquiry.html.
  */
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 
 interface InquiryResult {
   name: string;
@@ -32,7 +37,8 @@ interface InquiryResult {
   doctor_specialty: string;
 }
 
-export default function InquiryPage() {
+function InquiryForm() {
+  const searchParams = useSearchParams();
   const [serviceCode, setServiceCode] = useState("");
   const [nationalId, setNationalId] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -45,6 +51,23 @@ export default function InquiryPage() {
 
   // Refs for menu toggle (mirror original `showSlidbar` behaviour)
   const navCollapseRef = useRef<HTMLDivElement>(null);
+  // Ref for the national_id input —用于聚焦当 code جاء من QR
+  const nationalIdRef = useRef<HTMLInputElement>(null);
+
+  // اقرأ ?code=XXX من الرابط وعبّئ حقل رمز الخدمة تلقائياً
+  // Read ?code=XXX from URL and pre-fill the service_code field.
+  // This lets the QR code in the PDF deep-link to this page with the
+  // GSL code already entered — the user only needs to type their ID.
+  useEffect(() => {
+    const codeFromUrl = searchParams.get("code")?.trim() || "";
+    if (codeFromUrl) {
+      setServiceCode(codeFromUrl);
+      // ركّز على حقل رقم الهوية ليُكمل المستخدم الاستعلام مباشرة
+      setTimeout(() => {
+        nationalIdRef.current?.focus();
+      }, 100);
+    }
+  }, [searchParams]);
 
   // Hide error message when user types in service_code (mirror original
   // `keydown` listener that hides the error)
@@ -56,7 +79,6 @@ export default function InquiryPage() {
     setServiceCode("");
     setNationalId("");
     setResult(null);
-    setErrorVisible(false);
     setErrorVisible(false);
     setInputsDisabled(false);
     setSubmitButtonVisible(true);
@@ -302,6 +324,7 @@ export default function InquiryPage() {
                   value={nationalId}
                   onChange={(e) => setNationalId(e.target.value)}
                   disabled={inputsDisabled}
+                  ref={nationalIdRef}
                 />
               </div>
 
@@ -478,5 +501,18 @@ export default function InquiryPage() {
       {/* ElevenLabs widget (kept as in original) */}
       <elevenlabs-convai dir="ltr" agent-id="agent_1301kg5kw3djfmn9wrwj8gqa0cee" />
     </>
+  );
+}
+
+// ============================================================================
+//  Default export — wrapped in <Suspense> because useSearchParams() requires
+//  it in Next.js App Router (without it, the page would trigger a build-time
+//  error: "useSearchParams() should be wrapped in a suspense boundary").
+// ============================================================================
+export default function InquiryPage() {
+  return (
+    <Suspense fallback={<div style={{ padding: "2rem", textAlign: "center" }}>جارٍ التحميل...</div>}>
+      <InquiryForm />
+    </Suspense>
   );
 }

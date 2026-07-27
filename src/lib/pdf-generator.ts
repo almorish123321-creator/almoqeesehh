@@ -184,9 +184,104 @@ export async function generateSickLeavePDF(
     options: DrawOpts = {},
   ) => {
     const fontToUse = options.weight === "bold" ? fontArBold : fontArReg;
+    const fontEnUse = options.weight === "bold" ? fontEnBold : fontEnReg;
+
+    // ============================================================
+    // SPECIAL CASE: text contains "/" (forward slash).
+    // Noto Sans Arabic does NOT have the U+002F glyph — it renders as
+    // tofu (empty box). We split the text on "/" and render each Arabic
+    // piece with the Arabic font, the slash itself with Times-Roman.
+    // This is needed for the row label "رقم الهوية / الإقامة".
+    // ============================================================
+    if (useArabicFont && String(text).includes("/")) {
+      const fontSize = options.fontSize || 12;
+      const color = options.color || "#000000";
+      const pieces = String(text).split("/");
+      const trimmedPieces = pieces.map((p) => p.trim());
+
+      // Measure each piece with its own font
+      doc.font(fontToUse).fontSize(fontSize);
+      const arabicWidths = trimmedPieces.map((p) => doc.widthOfString(p));
+
+      doc.font(fontEnUse).fontSize(fontSize);
+      const slashWidth = doc.widthOfString("/");
+
+      const gap = fontSize * 0.25; // small gap between word and slash
+      const totalWidth =
+        arabicWidths.reduce((s, w) => s + w, 0) +
+        slashWidth * (pieces.length - 1) +
+        gap * 2 * (pieces.length - 1);
+
+      // Compute start X based on alignment within the optional width
+      let startX = x;
+      if (options.align === "center" && options.width) {
+        startX = x + (options.width - totalWidth) / 2;
+      } else if (options.align === "right" && options.width) {
+        startX = x + options.width - totalWidth;
+      } else if (options.align === "left" || !options.align) {
+        startX = x;
+      } else if (options.align === "right" && !options.width) {
+        // right-align without width — PDFKit default: place at x going left
+        startX = x - totalWidth;
+      }
+
+      // Render pieces left-to-right in visual order:
+      // Arabic1 (leftmost), slash, Arabic2, slash, Arabic3, ...
+      // (for "رقم الهوية / الإقامة": pieces = ["رقم الهوية", "الإقامة"])
+      // In Arabic RTL reading: piece[0] appears on the RIGHT, piece[1] on the LEFT.
+      // To get the visual order "رقم الهوية" on right, "/" in middle, "الإقامة" on left,
+      // we render pieces from RIGHT to LEFT in visual space.
+      let curX = startX;
+      // Render right-to-left: last piece first (rightmost), then slash, then prev piece, etc.
+      // But PDFKit draws at the given X with the text extending right by its width.
+      // So to put piece[N-1] (rightmost in visual RTL) at startX, we draw it at curX.
+      // Then slash at curX + width(piece[N-1]) + gap.
+      // Then piece[N-2] at curX + width(piece[N-1]) + gap + slashWidth + gap. Etc.
+      // Actually the natural visual order for "A / B" in RTL is:
+      //   A on the right, slash in middle, B on the left.
+      // So pieces[0]=A on right, pieces[1]=B on left.
+      // We draw pieces[0] first at startX (rightmost), then slash, then pieces[1].
+
+      // pieces[0] is the rightmost (first read in Arabic)
+      doc.font(fontToUse).fontSize(fontSize).fillColor(color);
+      doc.text(trimmedPieces[0], curX, y, {
+        features: ["rtla"],
+        align: "left",
+        lineBreak: false,
+      });
+      curX += arabicWidths[0] + gap;
+
+      // Then alternating slash + next piece
+      for (let i = 1; i < trimmedPieces.length; i++) {
+        doc.font(fontEnUse).fontSize(fontSize).fillColor(color);
+        doc.text("/", curX, y, {
+          align: "left",
+          lineBreak: false,
+        });
+        curX += slashWidth + gap;
+
+        doc.font(fontToUse).fontSize(fontSize).fillColor(color);
+        doc.text(trimmedPieces[i], curX, y, {
+          features: ["rtla"],
+          align: "left",
+          lineBreak: false,
+        });
+        curX += arabicWidths[i] + gap;
+      }
+      return;
+    }
+
+    // ============================================================
+    // DEFAULT: single-font rendering (with optional rtla feature)
+    // ============================================================
+    // rtla GSUB feature breaks ASCII separators (- \ |) into tofu boxes
+    // in Noto Sans Arabic. Detect any ASCII separator in the text and
+    // disable rtla for that specific text call — Arabic shaping still
+    // works correctly without rtla.
+    const hasAsciiSep = /[\\|]/.test(String(text));
     const defaultOptions: DrawOpts = {
       align: "right",
-      features: ["rtla"],
+      features: hasAsciiSep ? [] : ["rtla"],
     };
     if (!useArabicFont) {
       delete defaultOptions.features;
@@ -739,9 +834,13 @@ export async function generateSickLeavePDF(
 
   const leftCenterX = centerX / 2;
 
-  // QR — same data string as original: "Check Report: <gsl_code>"
+  // QR — يفتح صفحة الاستعلام ويُعبّئ رمز الخدمة تلقائياً عند مسحه.
+  // The QR contains a URL that opens the inquiry page with the GSL code
+  // pre-filled in the service_code field. Scanning it with any phone camera
+  // opens the inquiry page directly.
   try {
-    const qrData = `Check Report: ${patient.gsl_code}`;
+    const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://almoqeesehh.vercel.app";
+    const qrData = `${baseUrl}/inquiry?code=${encodeURIComponent(patient.gsl_code)}`;
     const qrImage = await QRCode.toDataURL(qrData);
     doc.image(qrImage, leftCenterX - 20, footerY, { width: 100 });
   } catch (qrErr) {
@@ -777,10 +876,13 @@ export async function generateSickLeavePDF(
     .fillColor("blue")
     .font(fontEnBold)
     .fontSize(9);
-  doc.text("www.seha.sa/#/inquiries/slenquiry", leftCenterX - 110, footerY + 180, {
+  // الرابط أسفل الـ QR — يفتح صفحة الاستعلام ويُعبّئ رمز الخدمة تلقائياً
+  const inquiryBaseUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://almoqeesehh.vercel.app";
+  const inquiryLink = `${inquiryBaseUrl}/inquiry`;
+  doc.text("almoqeesehh.vercel.app/inquiry", leftCenterX - 110, footerY + 180, {
     width: 250,
     align: "center",
-    link: "https://www.seha.sa/#/inquiries/slenquiry",
+    link: inquiryLink,
     underline: true,
   });
 
