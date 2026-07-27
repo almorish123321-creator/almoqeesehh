@@ -2208,3 +2208,45 @@ Stage Summary:
 روابط الإنتاج النهائية:
 - لوحة الإدارة (إدخال البيانات + توليد PDF): https://almoqeesehh.vercel.app/
 - صفحة الاستعلامات العامة: https://almoqeesehh.vercel.app/inquiry
+
+---
+Task ID: PDF-FINAL-TWEAKS
+Agent: main (Super Z)
+Task: إصلاح 3 مشاكل في PDF: (1) الشرطة في "رقم الهوية / الإقامة" مرتفعة وبعيدة، (2) "day(s)" يجب أن تكون "day"، (3) كلمة "يوم" منخفضة عن الأرقام في الصف 2
+
+Work Log:
+- التشخيص عبر VLM:
+  * الشرطة '/' كانت تظهر أعلى من النص العربي ومتباعدة عن الكلمات
+  * النص الإنجليزي في الصف 2 يحتوي على "day(s)" بدلاً من "day"
+  * كلمة "يوم" كانت منخفضة عن التواريخ والأرقام في خلية المدة العربية
+
+- Fix 1 — src/lib/pdf-generator.ts (slash alignment):
+  * yOffset = fontSize * 0.3 (تجريبياً أفضل محاذاة بين Times-Roman '/' و NotoArabic)
+  * gap = fontSize * 0.1 (مخفوض من 0.25 — الشرطة أقرب للكلمات)
+  * تم التحقق عبر scripts/test-slash-align.cjs أن offset 4.2 (= 14 * 0.3) هو الأفضل
+  * VLM أكّد: الشرطة الآن عمودياً في منتصف النص العربي وأفقياً قريبة من الكلمات
+
+- Fix 2 — src/lib/pdf-generator.ts (remove (s)):
+  * تغيير "day(s)" إلى "day" في const duration
+  * pdftotext أكّد: "7 day (09-06-2026 to 15-06-2026)" في PDF الإنتاجي
+
+- Fix 3 — src/lib/pdf-generator.ts (يوم baseline):
+  * توحيد yAr = yEn (نفس Y للنص العربي والإنجليزي)
+  * حساب maxH = Math.max(hDur, hEn) ثم Y = currentY + (rowH - maxH) / 2
+  * استخدام نفس Y لكل من yAr و yEn يضمن أن كل العناصر (تواريخ، أقواس، يوم، رقم) على نفس baseline
+
+- نشر النتائج:
+  * git commit: 3100e33 fix(pdf): slash alignment + remove (s) from day + unify يوم baseline
+  * git push نجح
+  * Vercel deployment dpl_3eoBsxbHXow3oot32RD9tG6rpnWs → READY
+  * اختبار الإنتاج:
+    - POST /api/generate-pdf → 200 OK، 131162 bytes
+    - pdftotext: "7 day (09-06-2026 to 15-06-2026)" ✓
+    - QR: https://almoqeesehh.vercel.app/inquiry ✓
+
+Stage Summary:
+- ✅ الشرطة '/' الآن عمودياً في منتصف النص العربي وأفقياً قريبة من الكلمات
+- ✅ "day" بدلاً من "day(s)" — مؤكد بـ pdftotext
+- ✅ يوم والأرقام والتواريخ كلها على نفس baseline في الصف 2
+- ✅ النشر على Vercel Production نجح
+- ✅ الكود مرفوع على GitHub (commit 3100e33)
