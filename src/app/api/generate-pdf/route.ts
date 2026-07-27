@@ -1,41 +1,28 @@
 /**
  * POST /api/generate-pdf
- * Body: LeaveFormData (JSON)
+ * Body: ApiPayload (JSON)
  * Response: application/pdf (the sick leave report)
  *
- * Generates a bilingual (Arabic/English) Sick Leave Report PDF mirroring
- * the layout of the original Python bot's pdf_generator_updated.py and
- * the website's sickLeaveReportGenerator.js.
+ * Generates a Sick Leave Report PDF by delegating to
+ * `src/lib/pdf-generator.ts` — a faithful TypeScript port of the
+ * original Express.js `sickLeaveReportGenerator.js` from
+ * alehtiat-almorish.
+ *
+ * The PDF format, colors, dimensions, fonts, and layout are
+ * preserved EXACTLY from the original. This route is a thin
+ * Next.js App-Router wrapper that:
+ *   1. Parses the JSON body
+ *   2. Calls generateSickLeavePDF(patient, hospital, doctor)
+ *   3. Returns the resulting Buffer as application/pdf
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import PDFDocument from "pdfkit";
-import QRCode from "qrcode";
-import path from "path";
-import fs from "fs";
-import {
-  LeaveFormData,
-  DEFAULTS,
-} from "@/lib/leave-form";
-import {
-  normalizeDateToDDMMYYYY,
-  calculateDays,
-  generateLeaveId,
-  toISODate,
-  toTimeDisplay,
-} from "@/lib/parser";
+import { generateSickLeavePDF, type PatientData, type HospitalData } from "@/lib/pdf-generator";
+import { calculateDays, generateLeaveId, normalizeDateToDDMMYYYY, toISODate } from "@/lib/parser";
+import { DEFAULTS, type LeaveFormData } from "@/lib/leave-form";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-// --- Asset paths (resolved from project root at runtime) ---
-const ROOT = process.cwd();
-const FONT_AR_REG = path.join(ROOT, "public", "fonts", "NotoSansArabic-Regular.ttf");
-const FONT_AR_BOLD = path.join(ROOT, "public", "fonts", "NotoSansArabic-Bold.ttf");
-const SEHA_LOGO = path.join(ROOT, "public", "images", "seha-logo.jpg");
-const KINGDOM_TEXT = path.join(ROOT, "public", "images", "kingdom-text.jpg");
-const GEOMETRIC = path.join(ROOT, "public", "images", "geometric-shape.jpg");
-const NATIONAL_INFO = path.join(ROOT, "public", "images", "national-health-info.jpg");
 
 export interface ApiPayload {
   leaveNumber: string;
@@ -62,11 +49,11 @@ export interface ApiPayload {
 }
 
 /**
- * Build the API payload (the same shape the Python bot sent to /api/bot/add_leave).
- * Mirrors bot/api_client.py send_leave_data_to_api.
+ * Build the API payload from the form data — kept compatible with the
+ * existing entry page (/) that POSTs the same JSON shape.
  */
 export function buildApiPayload(data: LeaveFormData): ApiPayload {
-  const filled: LeaveFormData = { ...DEFAULTS, ...data } as any;
+  const filled: LeaveFormData = { ...DEFAULTS, ...data } as LeaveFormData;
 
   if (!filled.id_number) filled.id_number = DEFAULTS.id_number;
   if (!filled.patient_name_ar) filled.patient_name_ar = DEFAULTS.patient_name_ar;
@@ -105,7 +92,7 @@ export function buildApiPayload(data: LeaveFormData): ApiPayload {
     hospitalNameEn: filled.hospital_name_en,
     licenseNumber: filled.license_number,
     leaveType: "sick",
-    time: toTimeDisplay(filled.time) || filled.time,
+    time: filled.time || "",
   };
 }
 
@@ -114,706 +101,58 @@ export async function POST(req: NextRequest) {
     const body = (await req.json()) as LeaveFormData;
     const payload = buildApiPayload(body);
 
-    const pageWidth = 841.89;
-    const pageHeight = 1150;
-    const doc = new PDFDocument({
-      size: [pageWidth, pageHeight],
-      margins: { top: 40, bottom: 40, left: 40, right: 40 },
-    });
-
-    const arRegExists = fs.existsSync(FONT_AR_REG);
-    const arBoldExists = fs.existsSync(FONT_AR_BOLD);
-    const fontArReg = arRegExists ? FONT_AR_REG : "Helvetica";
-    const fontArBold = arBoldExists ? FONT_AR_BOLD : "Helvetica-Bold";
-    const useArabicFont = arRegExists && arBoldExists;
-
-    const fontEnReg = "Times-Roman";
-    const fontEnBold = "Times-Bold";
-
-    // فك ترميز الشعار المرفوع (base64 data URL) إلى Buffer إن وُجد
-    // Decode the uploaded hospital logo (base64 data URL) into a Buffer if present
-    let uploadedLogoBuffer: Buffer | null = null;
+    // Decode uploaded hospital logo (base64 data URL) into a temp file
+    // path so the original generator can `fs.existsSync` it. The original
+    // takes a file path string; we write the buffer to /tmp if present.
+    let hospitalLogoPath: string | undefined;
     if (body.hospital_logo && typeof body.hospital_logo === "string") {
       const matches = body.hospital_logo.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
       if (matches && matches[2]) {
         try {
-          uploadedLogoBuffer = Buffer.from(matches[2], "base64");
+          const buf = Buffer.from(matches[2], "base64");
+          const fs = await import("fs");
+          const path = await import("path");
+          const tmpPath = path.join("/tmp", `hospital-logo-${Date.now()}.png`);
+          fs.writeFileSync(tmpPath, buf);
+          hospitalLogoPath = tmpPath;
         } catch {
-          uploadedLogoBuffer = null;
+          hospitalLogoPath = undefined;
         }
       }
     }
 
-    const drawTextAr = (text: string, x: number, y: number, options: any = {}) => {
-      const fontToUse = options.weight === "bold" ? fontArBold : fontArReg;
-      if (options.fontSize) doc.fontSize(options.fontSize);
-      if (options.color) doc.fillColor(options.color);
-
-      // اكتشف إن كان النص عربياً نقياً (لا يحوي أرقاماً لاتينية أو أحرفاً
-      // لاتينية). في هذه الحالة يجب تفعيل `features: ["rtla"]` لضمان إعادة
-      // ترتيب BiDi الصحيح: pdfkit/fontkit بدون هذه الميزة يعرض الكلمات
-      // العربية بترتيب منطقي LTR، فيرى القارئ العربي الكلمة الثانية أولاً
-      // (مثلاً "إجازة رمز" بدلاً من "رمز الإجازة").
-      //
-      // Detect pure-Arabic text (no Latin digits or letters). In that case
-      // enable `features: ["rtla"]` to ensure proper BiDi reordering: without
-      // this feature, pdfkit/fontkit renders Arabic words in logical LTR
-      // order, so an Arabic RTL reader sees the second word first (e.g.
-      // "إجازة رمز" instead of "رمز الإجازة").
-      //
-      // للنصوص المختلطة (عربي + أرقام لاتينية أو أحرف لاتينية)، لا تستخدم
-      // `rtla` لأنها تعكس الأرقام وتكسر الأقواس — استخدم المقاربة بالمقاطع
-      // عبر renderVisualPieces بدلاً من ذلك.
-      // For mixed text (Arabic + Latin digits or letters), do NOT use `rtla`
-      // because it reverses digits and breaks brackets — use the piece-by-piece
-      // approach via renderVisualPieces instead.
-      const stripped = String(text).replace(/[\u200e\u200f\u200d\u200c]/g, "");
-      // عربي نقي = حروف عربية، مسافات، علامات ترقيم عربية، نقطتين، شرطة، أقواس عربية فقط
-      // Pure Arabic = only Arabic letters, spaces, Arabic punctuation, colon, dash, Arabic parens
-      const isPureArabic = /^[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\s\u060C\u061B\u061F\uFD3E\uFD3F:\-()/\\]*$/.test(stripped)
-        && /[\u0600-\u06FF]/.test(stripped)
-        && !/[0-9A-Za-z]/.test(stripped);
-
-      const opts: any = { align: "right", ...options };
-      if (useArabicFont && isPureArabic && !opts.features) {
-        opts.features = ["rtla"];
-      }
-      doc.font(fontToUse).text(text, x, y, opts);
+    // Build the patient object expected by generateSickLeavePDF
+    // — matches the field names of PatientData from pdf-generator.ts.
+    const patient: PatientData = {
+      gsl_code: payload.leaveNumber,
+      identity_number: payload.idNumber,
+      name_ar: payload.name,
+      name_en: payload.nameEn,
+      date_from: payload.entryDate,
+      date_to: payload.exitDate,
+      day_count: payload.dayCount,
+      issue_date: payload.entryDate, // Issue Date = admission date (matches original behaviour)
+      employer: payload.employer,
+      employer_en: payload.employerEn,
+      doctor_name_ar: payload.doctor,
+      doctor_name_en: payload.doctorEn,
+      doctor_specialty_ar: payload.jobTitle,
+      doctor_specialty_en: payload.jobTitleEn,
+      nationalityObj: {
+        name_ar: payload.nationality,
+        name_en: payload.nationalityEn,
+      },
+      time_from: payload.time,
     };
 
-    const drawTextEn = (text: string, x: number, y: number, options: any = {}) => {
-      const fontToUse = options.weight === "bold" ? fontEnBold : fontEnReg;
-      if (options.color) doc.fillColor(options.color);
-      doc.font(fontToUse).text(text, x, y, options);
+    const hospital: HospitalData | null = {
+      name_ar: payload.hospitalName,
+      name_en: payload.hospitalNameEn,
+      logo: hospitalLogoPath,
+      license_number: payload.licenseNumber,
     };
 
-    /**
-     * عرض خلية نص مختلط عربي/إنجليزي مع الحفاظ على ترتيب BiDi الصحيح
-     * ومنع عكس أرقام التواريخ.
-     *
-     * السبب الجذري للمشكلة: عند تمرير `features: ["rtla"]` إلى pdfkit مع نص
-     * مختلط (عربي + أرقام لاتينية)، يعكس pdfkit ترتيب الأرقام داخل المقاطع
-     * الـ LTR (يظهر "20-09-2025" كـ "5202-90-02"). الحل: لا تستخدم `rtla`
-     * لهذه الخلية — تشكيل الحروف العربية يحدث افتراضياً عبر GSUB بدون الحاجة
-     * لهذه الميزة، وخوارزمية BiDi ستتعامل مع الترتيب البصري الصحيح.
-     *
-     * Root cause: when `features: ["rtla"]` is passed to pdfkit with mixed
-     * Arabic + Latin-digit text, pdfkit reverses digit order within LTR runs
-     * (showing "20-09-2025" as "5202-90-02"). Fix: don't use `rtla` for this
-     * cell — Arabic letter shaping happens via default GSUB without this feature,
-     * and pdfkit's BiDi handles the correct visual order.
-     *
-     * استخدم خط NotoSansArabic للنص بالكامل (يدعم الحروف العربية واللاتينية
-     * والأرقام) لتجنب مشاكل تموضع المقاطع المتعددة على خطوط منفصلة.
-     * Use NotoSansArabic font for the entire text (it supports Arabic letters,
-     * Latin letters, and digits) to avoid multi-segment positioning issues.
-     */
-    const renderMixedRtlCell = (opts: {
-      text: string;
-      x: number;
-      y: number;
-      width: number;
-      height: number;
-      fontSize: number;
-      color: string;
-      weight?: "regular" | "bold";
-    }) => {
-      const { text, x, y, width, height, fontSize, color, weight = "regular" } = opts;
-      // أزل علامات التحكم غير المرئية (LRM/RLM/ZWJ/ZWNJ) لأن خط NotoSansArabic
-      // قد يعرضها كمربعات صغيرة. خوارزمية BiDi في pdfkit ستعالج الترتيب صحيحاً
-      // بدونها.
-      // Remove invisible format controls (LRM/RLM/ZWJ/ZWNJ) — NotoSansArabic
-      // may render them as small tofu boxes. pdfkit's BiDi handles order correctly
-      // without them.
-      const cleanText = text.replace(/[\u200e\u200f\u200d\u200c]/g, "");
-      if (!cleanText) return;
-
-      const font = weight === "bold" ? fontArBold : fontArReg;
-      doc.font(font).fontSize(fontSize).fillColor(color);
-
-      // احسب ارتفاع السطر للتوسيط الرأسي
-      // Compute line height for vertical centering
-      const textH = doc.currentLineHeight(true);
-      const startY = y + (height - textH) / 2;
-
-      // اعرض النص بخط NotoSansArabic بدون `features: ["rtla"]` — التشكيل
-      // الافتراضي عبر GSUB يكفي للحروف العربية، وخوارزمية BiDi سترتب الأرقام
-      // والمقاطع اللاتينية في ترتيب LTR الصحيح داخل السياق RTL.
-      // Render the text with NotoSansArabic font WITHOUT `features: ["rtla"]`.
-      // Default GSUB shaping is sufficient for Arabic letters, and pdfkit's BiDi
-      // will order digits and Latin runs in correct LTR within the RTL context.
-      const useRtla = false;
-      const textOpts: any = {
-        width: width,
-        align: "center",
-        lineBreak: false,
-      };
-      if (useArabicFont && useRtla) {
-        textOpts.features = ["rtla"];
-      }
-      doc.text(cleanText, x, startY, textOpts);
-    };
-
-    /**
-     * اعرض عدة مقاطع نصية في صف واحد بترتيب بصري (يسار→يمين على الشاشة)،
-     * كل مقطع بخطه الخاص. كل مقطع يجب أن يكون نقي الاتجاه (إما عربي فقط أو
-     * لاتيني فقط) لمنع خوارزمية BiDi في pdfkit من إعادة ترتيب الأحرف داخل
-     * المقطع.
-     *
-     * Renders multiple text pieces on a single line in VISUAL order
-     * (left-to-right on screen). Each piece MUST be pure-direction (either
-     * all-Arabic or all-Latin/digits) to prevent pdfkit's BiDi from
-     * reordering characters within a piece.
-     *
-     * المقاربة مطابقة لما يفعله بوت Python عبر دالة `render_mixed_font_cell_v2`
-     * — يبني النص بترتيب بصري محسوب يدوياً ثم يعرض كل مقطع بخطه المناسب
-     * (NotoSansArabic للعربي، Times-Roman للاتيني/الأرقام).
-     *
-     * This mirrors the Python bot's `render_mixed_font_cell_v2` approach —
-     * build the text in manually-computed visual order, then render each
-     * piece with the appropriate font (NotoSansArabic for Arabic,
-     * Times-Roman for Latin/digits).
-     *
-     * وضع المحاذاة الأفقي: 'center' (توسيط) أو 'right' (محاذاة لليمين).
-     * Horizontal alignment: 'center' or 'right'.
-     */
-    const renderVisualPieces = (opts: {
-      pieces: { text: string; font: any }[];
-      x: number;
-      y: number;
-      width: number;
-      height: number;
-      fontSize: number;
-      color: string;
-      align?: "center" | "right" | "left";
-    }) => {
-      const { pieces, x, y, width, height, fontSize, color, align = "center" } = opts;
-      if (pieces.length === 0) return;
-
-      // احسب عرض كل مقطع بالخط الخاص به
-      // Compute width of each piece using its own font
-      const widths = pieces.map((p) => {
-        doc.font(p.font).fontSize(fontSize);
-        return doc.widthOfString(p.text);
-      });
-      const totalWidth = widths.reduce((a, b) => a + b, 0);
-      if (totalWidth <= 0) return;
-
-      // احسب ارتفاع السطر لكل خط على حدة — مختلف الخطوط لها ascender/descender
-      // مختلفة، فمحاذاة كل مقطع يجب أن تُحسب بخطه الخاص لضمان baseline متطابق.
-      // Compute line height for each font separately — different fonts have
-      // different ascender/descender, so each piece's vertical placement must
-      // be computed with its own font to ensure identical baselines.
-      const pieceLineHeights = pieces.map((p) => {
-        doc.font(p.font).fontSize(fontSize);
-        return doc.currentLineHeight(true);
-      });
-      // استخدم أكبر ارتفاع لتوسيط الكتلة رأسياً ضمن الخلية
-      // Use the largest line height to vertically center the block in the cell
-      const maxTextH = Math.max(...pieceLineHeights);
-      const blockTop = y + (height - maxTextH) / 2;
-
-      // احسب الإزاحة الأفقية الابتدائية حسب المحاذاة
-      // Compute starting X offset based on alignment
-      let cursorX: number;
-      if (align === "center") {
-        cursorX = x + (width - totalWidth) / 2;
-      } else if (align === "right") {
-        cursorX = x + width - totalWidth;
-      } else {
-        cursorX = x;
-      }
-
-      // اعرض كل مقطع بإحداثياته المطلقة — لا تستخدم continued:true لأنه
-      // يفعّل BiDi على مستوى السطر كاملاً مما يعيد ترتيب المقاطع.
-      // كل مقطع يُحاذى رأسياً بخطه الخاص لضمان baseline موحّد.
-      // Render each piece at its absolute coordinates — do NOT use
-      // continued:true because it triggers line-level BiDi that reorders
-      // pieces. Each piece is vertically positioned with its own font to
-      // ensure a unified baseline.
-      for (let i = 0; i < pieces.length; i++) {
-        const piece = pieces[i];
-        const pieceLH = pieceLineHeights[i];
-        // محاذاة كل مقطع بحيث يتطابق baseline مع baseline أطول مقطع
-        // Align each piece so its baseline matches the baseline of the tallest piece
-        const pieceY = blockTop + (maxTextH - pieceLH) / 2;
-        doc.font(piece.font).fillColor(color).fontSize(fontSize);
-        // lineBreak: false يمنع لف النص إلى سطر جديد (كل البيانات في سطر واحد)
-        // lineBreak: false prevents wrapping (all data on one line)
-        doc.text(piece.text, cursorX, pieceY, { lineBreak: false });
-        cursorX += widths[i];
-      }
-    };
-
-    // --- Header: three logos ---
-    // الشعار الأيسر: شعار منصة صحة (ثابت)
-    // Left logo: SEHA platform logo (static)
-    if (fs.existsSync(SEHA_LOGO)) doc.image(SEHA_LOGO, 40, 40, { width: 150 });
-    // الشعار الأوسط: نص المملكة العربية السعودية (ثابت)
-    // Center logo: Kingdom of Saudi Arabia text (static)
-    if (fs.existsSync(KINGDOM_TEXT)) doc.image(KINGDOM_TEXT, (pageWidth - 180) / 2, 70, { width: 180, align: "center" });
-    // الشعار الأيمن: الشعار الافتراضي (geometric-shape) دائماً.
-    // الشعار المرفوع يظهر في التذييل فقط فوق اسم المنشأة كما طلب المستخدم.
-    // Right logo: default geometric shape always.
-    // The uploaded logo appears in the footer only, above the hospital name, per user request.
-    if (fs.existsSync(GEOMETRIC)) {
-      doc.image(GEOMETRIC, pageWidth - 180, 40, { width: 170 });
-    }
-
-    doc.moveDown(9);
-
-    // --- Title ---
-    doc.fillColor("#306db5");
-    drawTextAr("تقرير إجازة مرضية", 0, doc.y, {
-      align: "center",
-      weight: "bold",
-      fontSize: 22,
-      width: pageWidth,
-    });
-    doc.moveDown(0.1);
-    doc
-      .font(fontEnBold)
-      .fillColor("#2c3e77")
-      .fontSize(19)
-      .text("Sick Leave Report", 0, doc.y, { align: "center", width: pageWidth });
-    doc.moveDown(1.5);
-
-    // --- Table ---
-    const startX = 40;
-    const startY = 250;
-    const col1W = 160;
-    const col3W = 160;
-    const tableWidth = 760;
-    const col2W = tableWidth - col1W - col3W;
-    let currentY = startY;
-
-    const drawRow = (
-      labelEn: string,
-      value: string | { en: string; ar: string },
-      labelAr: string,
-      isDoubleValue = false,
-      bgColor: string | null = null,
-    ) => {
-      const labelFontSize = 14;
-      const valueFontSize = 14;
-      const padding = 15;
-
-      doc.font(fontEnReg).fontSize(valueFontSize);
-      let maxTextHeight = 0;
-
-      if (isDoubleValue && typeof value === "object") {
-        const subColW = col2W / 2;
-        const h1 = doc.heightOfString(value.en || "-", { width: subColW - 20 });
-        doc.font(fontArReg);
-        const h2 = doc.heightOfString(value.ar || "-", { width: subColW - 20 });
-        maxTextHeight = Math.max(h1, h2);
-      } else {
-        maxTextHeight = doc.heightOfString((value as string) || "-", { width: col2W - 20 });
-      }
-
-      doc.font(fontEnBold).fontSize(labelFontSize);
-      const labelH1 = doc.heightOfString(labelEn, { width: col1W - 20 });
-      doc.font(fontArBold).fontSize(labelFontSize);
-      const labelH2 = doc.heightOfString(labelAr, { width: col3W - 20 });
-      maxTextHeight = Math.max(maxTextHeight, labelH1, labelH2);
-
-      const dynamicRowH = Math.max(40, maxTextHeight + padding);
-
-      if (bgColor) {
-        doc.save();
-        doc.rect(startX, currentY, tableWidth, dynamicRowH).fill(bgColor);
-        doc.restore();
-      }
-
-      doc.rect(startX, currentY, tableWidth, dynamicRowH).strokeColor("#e0e0e0").stroke();
-      doc.moveTo(startX + col1W, currentY).lineTo(startX + col1W, currentY + dynamicRowH).stroke();
-      doc.moveTo(startX + col1W + col2W, currentY).lineTo(startX + col1W + col2W, currentY + dynamicRowH).stroke();
-
-      doc.font(fontEnBold).fontSize(labelFontSize);
-      const lH1 = doc.heightOfString(labelEn, { width: col1W - 30 });
-      const y1 = currentY + (dynamicRowH - lH1) / 2;
-      doc.font(fontArBold).fontSize(labelFontSize);
-      const lH2 = doc.heightOfString(labelAr, { width: col3W - 30 });
-      const y2 = currentY + (dynamicRowH - lH2) / 2;
-
-      drawTextEn(labelEn, startX + 15, y1, {
-        width: col1W - 30,
-        align: "center",
-        weight: "bold",
-        fontSize: labelFontSize,
-        color: "#2b5d88",
-      });
-      drawTextAr(labelAr, startX + col1W + col2W + 15, y2, {
-        width: col3W - 30,
-        align: "center",
-        weight: "bold",
-        fontSize: labelFontSize,
-        color: "#2b5d88",
-      });
-
-      if (isDoubleValue && typeof value === "object") {
-        const subColW = col2W / 2;
-        doc.moveTo(startX + col1W + subColW, currentY).lineTo(startX + col1W + subColW, currentY + dynamicRowH).strokeColor("#e0e0e0").stroke();
-
-        doc.font(fontEnReg).fontSize(valueFontSize);
-        const vH1 = doc.heightOfString(value.en || "-", { width: subColW - 30 });
-        const vy1 = currentY + (dynamicRowH - vH1) / 2;
-        drawTextEn(value.en || "-", startX + col1W + 15, vy1, {
-          width: subColW - 30,
-          align: "center",
-          fontSize: valueFontSize,
-          color: "#29396e",
-        });
-
-        const arText = value.ar || "-";
-        const cleanText = String(arText).replace(/[^0-9\-/]/g, "").trim();
-        let isDate = false;
-        let vH2 = 0;
-        if (cleanText.length > 0 && /^[0-9\-/]+$/.test(cleanText)) {
-          isDate = true;
-          doc.font(fontEnReg).fontSize(valueFontSize);
-          vH2 = doc.heightOfString(cleanText, { width: subColW - 30 });
-        } else {
-          doc.font(fontArReg).fontSize(valueFontSize);
-          vH2 = doc.heightOfString(arText, { width: subColW - 30 });
-        }
-        const vy2 = currentY + (dynamicRowH - vH2) / 2;
-        if (isDate) {
-          drawTextEn(cleanText, startX + col1W + subColW + 15, vy2, {
-            width: subColW - 30,
-            align: "center",
-            fontSize: valueFontSize,
-            color: "#29396e",
-          });
-        } else {
-          drawTextAr(arText, startX + col1W + subColW + 15, vy2, {
-            width: subColW - 30,
-            align: "center",
-            fontSize: valueFontSize,
-            color: "#29396e",
-          });
-        }
-      } else {
-        doc.font(fontEnReg).fontSize(valueFontSize);
-        const vH = doc.heightOfString((value as string) || "-", { width: col2W - 30 });
-        const vY = currentY + (dynamicRowH - vH) / 2;
-        drawTextEn((value as string) || "-", startX + col1W + 15, vY, {
-          width: col2W - 30,
-          align: "center",
-          fontSize: valueFontSize,
-          color: "#29396e",
-        });
-      }
-
-      currentY += dynamicRowH;
-    };
-
-    const startDateFormatted = normalizeDateToDDMMYYYY(payload.entryDate);
-    const endDateFormatted = normalizeDateToDDMMYYYY(payload.exitDate);
-
-    const getArabicDuration = (count: number) => {
-      // صيغة البوت: الكلمة العربية أولاً ثم الرقم (مطابق لإخراج بوت Python).
-      // هذا التنسيق يضمن تشكيلاً عربياً صحيحاً متصلاً ويطابق إخراج البوت
-      // الذي استخدم `arabic_reshaper + python-bidi` بنجاح في الإنتاج.
-      // Bot's format: Arabic word first, then the digit. This matches the
-      // Python bot's output and ensures proper Arabic letter shaping.
-      if (count === 0) return "يوم 0";
-      if (count === 1) return "يوم 1";
-      if (count === 2) return "يومان 2";
-      if (count >= 3 && count <= 10) return `أيام ${count}`;
-      return `يوم ${count}`;
-    };
-
-    const durText = getArabicDuration(payload.dayCount);
-    // أزل "(s)" بعد كلمة day بناءً على طلب المستخدم — أصبحت "day" فقط.
-    // أضف مسافة قبل القوس المفتوح وبعد القوس المغلق لمطابقة التنسيق المرجعي.
-    // Removed the "(s)" after "day" per user request — now just "day".
-    // Added space before "(" and after ")" to match reference format.
-    const duration = `${payload.dayCount} day ( ${startDateFormatted} to ${endDateFormatted} )`;
-
-    drawRow("Leave ID", payload.leaveNumber, "رمز الإجازة");
-
-    // Row 2: Duration
-    const rowH = 45;
-    const durFontSize = 13;
-
-    doc.save();
-    doc.rect(startX, currentY, tableWidth, rowH).fill("#2c3e77");
-
-    doc.font(fontEnBold).fontSize(durFontSize);
-    const durLabelH1 = doc.heightOfString("Leave Duration", { width: col1W - 30 });
-    const durY1 = currentY + (rowH - durLabelH1) / 2;
-    doc.font(fontArBold).fontSize(durFontSize);
-    const durLabelH2 = doc.heightOfString("مدة الإجازة", { width: col3W - 30 });
-    const durY2 = currentY + (rowH - durLabelH2) / 2;
-
-    drawTextEn("Leave Duration", startX + 15, durY1, {
-      width: col1W - 30,
-      align: "center",
-      weight: "bold",
-      fontSize: durFontSize,
-      color: "#ffffff",
-    });
-    drawTextAr("مدة الإجازة", startX + col1W + col2W + 15, durY2, {
-      width: col3W - 30,
-      align: "center",
-      weight: "bold",
-      fontSize: durFontSize,
-      color: "#ffffff",
-    });
-
-    const subColW = col2W / 2;
-    doc.moveTo(startX + col1W, currentY).lineTo(startX + col1W, currentY + rowH).strokeColor("#ffffff").stroke();
-    doc.moveTo(startX + col1W + subColW, currentY).lineTo(startX + col1W + subColW, currentY + rowH).stroke();
-    doc.moveTo(startX + col1W + col2W, currentY).lineTo(startX + col1W + col2W, currentY + rowH).stroke();
-
-    doc.font(fontEnReg).fontSize(durFontSize - 1);
-    const durValH1 = doc.heightOfString(duration, { width: subColW - 20 });
-    const durValY1 = currentY + (rowH - durValH1) / 2;
-    drawTextEn(duration, startX + col1W + 10, durValY1, {
-      width: subColW - 20,
-      align: "center",
-      fontSize: durFontSize - 1,
-      color: "#ffffff",
-    });
-
-    // عرض خلية المدة العربية — نهج النص الواحد المطابق لإخراج بوت Python.
-    //
-    // البوت يبني النص المنطقي: `يوم 1 (date1 إلى date2)` ثم يطبّق
-    // arabic_reshaper + python-bidi. في Node.js، pdfkit/fontkit يقومان
-    // بالتشكيل و BiDi تلقائياً عبر HarfBuzz.
-    //
-    // اكتشفنا (عبر اختبارات بصرية) أن:
-    // 1. `features: ["rtla"]` تكسر الأرقام والأقواس — يجب عدم استخدامها.
-    // 2. بدء النص بحرف عربي (وليس رقم) ضروري لتشكيل عربي صحيح متصل.
-    // 3. صيغة البوت `يوم 1 (...)` تنتج أحرفاً متصلة وأرقاماً صحيحة.
-    //
-    // Render the Arabic duration cell — single-text approach mirroring the
-    // Python bot's output. pdfkit/fontkit handle shaping and BiDi via
-    // HarfBuzz automatically. Key findings from visual tests:
-    // 1. `features: ["rtla"]` breaks digits and brackets — must NOT use.
-    // 2. Starting the text with an Arabic letter (not a digit) is required
-    //    for proper Arabic letter shaping (connected forms).
-    // 3. Bot's format `يوم 1 (...)` produces connected letters and correct
-    //    digit order.
-    const toArabicDate = (ddmmyyyy: string) => {
-      // حوّل DD-MM-YYYY إلى YYYY-MM-DD لمطابقة التنسيق المطلوب
-      // Convert DD-MM-YYYY to YYYY-MM-DD to match required format
-      const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(ddmmyyyy);
-      if (m) return `${m[3]}-${m[2]}-${m[1]}`;
-      return ddmmyyyy;
-    };
-    const startDateAr = toArabicDate(startDateFormatted);
-    const endDateAr = toArabicDate(endDateFormatted);
-
-    // النص المنطقي الكامل بخط NotoSansArabic (يدعم العربي واللاتيني والأرقام).
-    // صيغة البوت: كلمة العربية أولاً ثم الرقم ثم التواريخ بين قوسين.
-    // Full logical text in NotoSansArabic font (supports Arabic, Latin, digits).
-    // Bot's format: Arabic word first, then number, then dates in parens.
-    const arabicDurationText = `${durText} ( ${startDateAr} إلى ${endDateAr} )`;
-
-    // تصغير الخط تلقائياً إن كان النص أعرض من الخلية لمنع الالتفاف لسطر ثانٍ.
-    // ابدأ بـ durFontSize-1 وانزل حتى 9 إن لزم.
-    // Auto-shrink font size if text is wider than the cell to prevent wrapping
-    // to a second line. Start at durFontSize-1, go down to 9 if needed.
-    const cellWidth = subColW - 20;
-    let durActualFontSize = durFontSize - 1;
-    for (let fs = durActualFontSize; fs >= 9; fs--) {
-      doc.font(fontArReg).fontSize(fs);
-      const w = doc.widthOfString(arabicDurationText);
-      if (w <= cellWidth) {
-        durActualFontSize = fs;
-        break;
-      }
-      if (fs === 9) {
-        durActualFontSize = 9;
-        break;
-      }
-    }
-
-    doc.font(fontArReg).fontSize(durActualFontSize).fillColor("#ffffff");
-    // احسب ارتفاع السطر للتوسيط الرأسي
-    // Compute line height for vertical centering
-    const durTextH = doc.currentLineHeight(true);
-    const durTextY = currentY + (rowH - durTextH) / 2;
-    doc.text(arabicDurationText, startX + col1W + subColW + 10, durTextY, {
-      width: cellWidth,
-      align: "center",
-      lineBreak: false,
-    });
-
-    doc.restore();
-    currentY += rowH;
-
-    drawRow("Admission Date", { en: startDateFormatted, ar: startDateFormatted }, "تاريخ الدخول", true, "#f7f7f7");
-    drawRow("Discharge Date", { en: endDateFormatted, ar: endDateFormatted }, "تاريخ الخروج", true);
-    drawRow("Issue Date", startDateFormatted, "تاريخ إصدار التقرير");
-    drawRow("Name", { en: payload.nameEn, ar: payload.name }, "الاسم", true, "#f7f7f7");
-    drawRow("National ID / Iqama", payload.idNumber, "رقم الهوية / الإقامة");
-    drawRow("Nationality", { en: payload.nationalityEn, ar: payload.nationality }, "الجنسية", true, "#f7f7f7");
-
-    const emptyIndicators = new Set(["", "غير محدد", "فارغ", "-", "None", "none", "null", "NULL", "Not Specified", "N/A", "n/a", "undefined"]);
-    const employerAr = emptyIndicators.has((payload.employer || "").trim()) ? " " : payload.employer;
-    const employerEn = emptyIndicators.has((payload.employerEn || "").trim()) ? " " : payload.employerEn;
-    drawRow("Employer", { en: employerEn, ar: employerAr }, "جهة العمل", true, "#f7f7f7");
-
-    drawRow("Practitioner Name", { en: payload.doctorEn, ar: payload.doctor }, "اسم الممارس", true, "#f7f7f7");
-    drawRow("Position", { en: payload.jobTitleEn, ar: payload.jobTitle }, "المسمى الوظيفي", true);
-
-    // --- Footer ---
-    const footerY = pageHeight - 400;
-    const centerX = pageWidth / 2;
-    doc.moveTo(centerX, footerY).lineTo(centerX, footerY + 150).strokeColor("#e0e0e0").stroke();
-
-    const leftCenterX = centerX / 2;
-    try {
-      const qrData = `Check Report: ${payload.leaveNumber}`;
-      const qrImage = await QRCode.toDataURL(qrData);
-      doc.image(qrImage, leftCenterX - 20, footerY, { width: 100 });
-    } catch (e) {
-      // ignore QR errors
-    }
-
-    drawTextAr(
-      "للتحقق من بيانات التقرير يرجى التأكد من زيارة موقع منصة صحة الرسمي",
-      leftCenterX - 125,
-      footerY + 110,
-      { width: 300, align: "center", weight: "bold", fontSize: 10, color: "#000000" },
-    );
-    drawTextEn("To check the report please visit Seha's official website", leftCenterX - 100, footerY + 150, {
-      width: 250,
-      align: "center",
-      weight: "bold",
-      fontSize: 10,
-      color: "#000000",
-    });
-
-    doc.fillColor("blue").font(fontEnBold).fontSize(9);
-    doc.text("www.seha.sa/#/inquiries/slenquiry", leftCenterX - 110, footerY + 180, {
-      width: 250,
-      align: "center",
-      link: "https://www.seha.sa/#/inquiries/slenquiry",
-      underline: true,
-    });
-
-    const rightCenterX = centerX + centerX / 2;
-
-    // شعار المنشأة في التذييل: يُعرض فوق اسم المنشأة إن رُفع شعار من المستخدم
-    // Footer facility logo: shown above the hospital name when user uploaded one
-    if (uploadedLogoBuffer) {
-      // ضع الشعار في صندوق 90×90 فوق اسم المنشأة
-      // Place logo in a 90x90 box above the hospital name
-      const logoBoxW = 90;
-      const logoBoxH = 90;
-      const logoX = rightCenterX - logoBoxW / 2;
-      const logoY = footerY;
-      try {
-        doc.image(uploadedLogoBuffer, logoX, logoY, { fit: [logoBoxW, logoBoxH], align: "center", valign: "center" });
-      } catch {
-        // تجاهل أخطاء الصور
-      }
-    }
-
-    // تخطيط اسم المنشأة في التذييل — مطابق للتنسيق المرجعي:
-    // - الاسم العربي في السطر الأول
-    // - الاسم الإنجليزي في السطر الثاني (دائماً في سطر مستقل)
-    // - رقم الترخيص (إن وُجد) في السطر الثالث
-    //
-    // Footer hospital name layout — matches reference format:
-    // - Arabic name on line 1
-    // - English name on line 2 (always on its own line)
-    // - License number (if any) on line 3
-    drawTextAr(payload.hospitalName || "", rightCenterX - 125, footerY + 100, {
-      width: 250,
-      align: "center",
-      weight: "bold",
-      fontSize: 12,
-      color: "#000000",
-    });
-    drawTextEn(payload.hospitalNameEn || "", rightCenterX - 125, footerY + 130, {
-      width: 250,
-      align: "center",
-      weight: "bold",
-      fontSize: 12,
-      color: "#000000",
-    });
-
-    const hasLicense = !!(payload.licenseNumber && !emptyIndicators.has(payload.licenseNumber.trim()));
-    if (hasLicense) {
-      // رقم الترخيص في سطر منفصل — نهج المقاطع المنفصلة.
-      //
-      // المشكلة: النص الواحد `رقم الترخيص: 1410101201200443` لا يُعاد ترتيبه
-      // بشكل صحيح بواسطة BiDi المبسّط في fontkit (يُعرض بالترتيب المصدر LTR،
-      // فيكون العنوان العربي على اليسار والرقم على اليمين — وهذا خطأ للقارئ
-      // العربي الذي يتوقع العنوان على اليمين والرقم على اليسار).
-      //
-      // الحل: قسّم النص إلى مقاطع نقيّة الاتجاه (رقم LTR، نقطتين محايد،
-      // عنوان عربي RTL) واعرضها بالترتيب البصري الصحيح: الرقم على اليسار،
-      // النقطتين في الوسط، العنوان العربي على اليمين. كل مقطع نقي الاتجاه
-      // يُعرَض بشكل صحيح بواسطة pdfkit.
-      //
-      // License number on a separate line — piece-by-piece approach.
-      //
-      // Problem: single text `رقم الترخيص: 1410101201200443` is NOT correctly
-      // reordered by fontkit's simplified BiDi (it renders in source LTR order,
-      // placing the Arabic label on the left and the number on the right —
-      // wrong for an Arabic reader who expects the label on the right and the
-      // number on the left).
-      //
-      // Solution: split the text into pure-direction pieces (LTR number, neutral
-      // colon, RTL Arabic label) and render them in the correct visual order:
-      // number on the left, colon in the middle, Arabic label on the right.
-      // Each piece is pure-direction so pdfkit renders it correctly.
-      const licensePieces = [
-        { text: payload.licenseNumber, font: fontArReg },   // visual leftmost: the number (use Arabic font for consistent baseline)
-        { text: " ", font: fontArReg },                     // space
-        { text: ":", font: fontArReg },                     // colon
-        { text: " ", font: fontArReg },                     // space
-        { text: "رقم الترخيص", font: fontArReg },           // visual rightmost: Arabic label
-      ];
-      // استخدم نفس الخط (NotoSansArabic) لكل المقاطع لضمان محاذاة رأسية
-      // متطابقة (نفس الـ baseline). Times-Roman له ascender أقصر من
-      // NotoSansArabic مما يجعل الرقم يظهر مرتفعاً عن النص العربي.
-      // Use the same font (NotoSansArabic) for all pieces to ensure identical
-      // vertical baseline. Times-Roman has a shorter ascender than
-      // NotoSansArabic, causing the number to appear higher than the Arabic text.
-      renderVisualPieces({
-        pieces: licensePieces,
-        x: rightCenterX - 150,
-        y: footerY + 158,
-        width: 300,
-        height: 25,
-        fontSize: 12,
-        color: "#000000",
-        align: "center",
-      });
-    }
-
-    const bottomY = pageHeight - 150;
-    const now = new Date();
-    const dateStr = now.toLocaleDateString("en-US", {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    });
-    const timeStr = payload.time || now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-
-    doc.font(fontEnBold).fontSize(12).fillColor("#000000");
-    doc.text(timeStr, 40, bottomY);
-    doc.text(dateStr, 40, bottomY + 20);
-
-    if (fs.existsSync(NATIONAL_INFO)) {
-      doc.image(NATIONAL_INFO, pageWidth - 160, bottomY - 20, { width: 120 });
-    }
-
-    doc.end();
-
-    const chunks: Buffer[] = [];
-    for await (const chunk of doc) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    const pdfBuffer = Buffer.concat(chunks);
+    const pdfBuffer = await generateSickLeavePDF(patient, hospital, null);
 
     return new NextResponse(new Uint8Array(pdfBuffer), {
       status: 200,
