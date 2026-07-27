@@ -191,7 +191,12 @@ export async function generateSickLeavePDF(
     // Noto Sans Arabic does NOT have the U+002F glyph — it renders as
     // tofu (empty box). We split the text on "/" and render each Arabic
     // piece with the Arabic font, the slash itself with Times-Roman.
-    // This is needed for the row label "رقم الهوية / الإقامة".
+    //
+    // Vertical alignment: Arabic fonts (Noto Sans Arabic) sit lower on
+    // the baseline than Times-Roman at the same font size, so the slash
+    // would appear higher than the Arabic text. We measure the actual
+    // baseline of each font and offset the slash Y so its baseline
+    // matches the Arabic baseline.
     // ============================================================
     if (useArabicFont && String(text).includes("/")) {
       const fontSize = options.fontSize || 12;
@@ -206,7 +211,15 @@ export async function generateSickLeavePDF(
       doc.font(fontEnUse).fontSize(fontSize);
       const slashWidth = doc.widthOfString("/");
 
-      const gap = fontSize * 0.25; // small gap between word and slash
+      // Vertical offset: shift the slash DOWN to align with Arabic x-height.
+      // Empirical testing (see scripts/test-slash-align.cjs) found that
+      // fontSize * 0.3 produces the best visual alignment between Times-Roman
+      // slash and Noto Sans Arabic letters. The Arabic font has a taller em-box
+      // and the script sits lower, so the slash drawn at the same Y appears
+      // too high — shifting it down by ~30% of the font size aligns it.
+      const yOffset = fontSize * 0.3;
+
+      const gap = fontSize * 0.1; // tight gap so slash sits close to the words
       const totalWidth =
         arabicWidths.reduce((s, w) => s + w, 0) +
         slashWidth * (pieces.length - 1) +
@@ -221,26 +234,13 @@ export async function generateSickLeavePDF(
       } else if (options.align === "left" || !options.align) {
         startX = x;
       } else if (options.align === "right" && !options.width) {
-        // right-align without width — PDFKit default: place at x going left
         startX = x - totalWidth;
       }
 
-      // Render pieces left-to-right in visual order:
-      // Arabic1 (leftmost), slash, Arabic2, slash, Arabic3, ...
-      // (for "رقم الهوية / الإقامة": pieces = ["رقم الهوية", "الإقامة"])
-      // In Arabic RTL reading: piece[0] appears on the RIGHT, piece[1] on the LEFT.
-      // To get the visual order "رقم الهوية" on right, "/" in middle, "الإقامة" on left,
-      // we render pieces from RIGHT to LEFT in visual space.
+      // Render pieces in visual RTL order:
+      // pieces[0] is the rightmost (first read in Arabic), then slash,
+      // then pieces[1] on the left, etc.
       let curX = startX;
-      // Render right-to-left: last piece first (rightmost), then slash, then prev piece, etc.
-      // But PDFKit draws at the given X with the text extending right by its width.
-      // So to put piece[N-1] (rightmost in visual RTL) at startX, we draw it at curX.
-      // Then slash at curX + width(piece[N-1]) + gap.
-      // Then piece[N-2] at curX + width(piece[N-1]) + gap + slashWidth + gap. Etc.
-      // Actually the natural visual order for "A / B" in RTL is:
-      //   A on the right, slash in middle, B on the left.
-      // So pieces[0]=A on right, pieces[1]=B on left.
-      // We draw pieces[0] first at startX (rightmost), then slash, then pieces[1].
 
       // pieces[0] is the rightmost (first read in Arabic)
       doc.font(fontToUse).fontSize(fontSize).fillColor(color);
@@ -253,8 +253,9 @@ export async function generateSickLeavePDF(
 
       // Then alternating slash + next piece
       for (let i = 1; i < trimmedPieces.length; i++) {
+        // Slash drawn at y + yOffset to align with Arabic baseline
         doc.font(fontEnUse).fontSize(fontSize).fillColor(color);
-        doc.text("/", curX, y, {
+        doc.text("/", curX, y + yOffset, {
           align: "left",
           lineBreak: false,
         });
@@ -560,7 +561,7 @@ export async function generateSickLeavePDF(
     return `${c} يوم`;
   };
 
-  const duration = `${patient.day_count || 0} day(s) (${startDateFormatted} to ${endDateFormatted})`;
+  const duration = `${patient.day_count || 0} day (${startDateFormatted} to ${endDateFormatted})`;
   const durText = getArabicDuration(patient.day_count);
   // Format: Count Unit (FromDate الى ToDate)
   const durationAr = `${durText} (${startDateFormatted} الى ${endDateFormatted})`;
@@ -663,11 +664,21 @@ export async function generateSickLeavePDF(
 
   doc.font(fontArReg);
   const hDur = doc.heightOfString(durTxt, { width: subColW - 20 });
-  const yAr = currentY + (rowH - hDur) / 2;
 
   doc.font(fontEnReg);
   const hEn = doc.heightOfString(hDateFrom, { width: subColW - 20 });
-  const yEn = currentY + (rowH - hEn) / 2;
+
+  // Unified baseline Y for ALL pieces in this cell (Arabic + English).
+  // The Arabic word "يوم" was rendering lower than the English dates/numbers
+  // because yAr and yEn were computed separately from different font heights.
+  // Using a single Y (based on the larger of the two heights) aligns
+  // everything on the same visual baseline.
+  const maxH = Math.max(hDur, hEn);
+  const yEn = currentY + (rowH - maxH) / 2;
+  // Use the SAME Y for Arabic and English text. The Arabic font (Noto Sans
+  // Arabic) has slightly different internal metrics than Times-Roman, but at
+  // the same Y they render at comparable visual baselines.
+  const yAr = yEn;
 
   // 1. (
   drawTextEn(parenOpen, startXAr, yEn, {
