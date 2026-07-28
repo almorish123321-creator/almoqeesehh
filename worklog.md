@@ -2250,3 +2250,63 @@ Stage Summary:
 - ✅ يوم والأرقام والتواريخ كلها على نفس baseline في الصف 2
 - ✅ النشر على Vercel Production نجح
 - ✅ الكود مرفوع على GitHub (commit 3100e33)
+
+---
+Task ID: PDF-FINAL-BASELINE-FIX
+Agent: main
+Task: Final refinement of slash + يوم baseline alignment per user feedback "الشرطه مرتفعه وبعيده عن الكلمه، يوم نازله شوي، ركز على انواع الخطوط"
+
+Work Log:
+- Read current state of src/lib/pdf-generator.ts (990 lines)
+- Ran scripts/test-slash-align.cjs to empirically measure font baselines:
+  * NotoArabic line height at F=14: 29.57pt
+  * Times-Roman line height at F=14: 15.62pt
+  * Difference: 13.94pt (this is the proper baseline shift)
+- VLM analysis (glm-5v-turbo) on test image confirmed:
+  * offset=(arabicH-slashH)=13.94pt → PERFECT alignment
+  * offset=fontSize*0.3=4.2pt (old value) → still slightly too high
+- Applied fix #1 (slash vertical):
+  * Replaced static `yOffset = fontSize * 0.3` with dynamic
+    `yOffset = arabicH - slashH` (measured at runtime via heightOfString)
+  * At F=14 bold: 13.43pt; regular: 13.94pt
+- Applied fix #2 (slash horizontal gap):
+  * Reduced `gap` from `fontSize * 0.1` (=1.4pt) to `0`
+  * Trimmed Arabic pieces already have natural side bearings; extra gap
+    made slash look detached from the words
+- Applied fix #3 (يوم baseline in duration row):
+  * Root cause: same as #1 — NotoArabic line box (~2.11×F) is much taller
+    than Times-Roman (~1.12×F). At same Y, Arabic glyphs sit at the BOTTOM
+    of their tall box (visually LOW) while Times-Roman glyphs sit at TOP
+    of their short box (visually HIGH). This is why "يوم" appeared LOWER.
+  * Fix: compute `baselineOffset = arabicLineH - englishLineH` at
+    durFontSize-1, then draw Arabic pieces at `yAr = yEn - baselineOffset`
+- Confirmed 'day' (no '(s)') — was already fixed in previous commit
+- Generated /tmp/full-test.pdf via npx tsx scripts/test-pdf-direct.ts
+- VLM verification on local PDF:
+  * Slash: "visually aligned on SAME baseline, CLOSE to words, natural"
+  * Duration row: "ALL elements on SAME baseline, يوم at SAME vertical level"
+  * Full page scan: "No issues"
+- Committed: 6530582 fix(pdf): slash baseline + gap, day, يوم baseline alignment
+- Pushed to GitHub (origin/main)
+- Vercel auto-deployed (project is linked to GitHub repo)
+- Generated PDF from https://almoqeesehh.vercel.app/api/generate-pdf
+- Verified local /tmp/full-test-1.png and Vercel /tmp/vercel-test-1.png are
+  PIXEL-IDENTICAL (Diff sum: 0, np.array_equal: True) — confirms Vercel
+  shipped the exact same code
+- VLM zoom-in on slash region confirms:
+  * Top of slash aligns with top of Arabic ascenders
+  * Bottom of slash aligns with baseline of Arabic letters
+  * Not floating above, not subscript below — properly scaled to full
+    Arabic text height
+- VLM on Vercel production duration row confirms all elements on same baseline
+
+Stage Summary:
+- All three user-reported issues resolved and verified on production
+- Slash '/' now properly aligned vertically AND horizontally close to words
+- 'day' confirmed (no '(s)')
+- 'يوم' now on same baseline as dates and numbers in duration row
+- Production deployment at https://almoqeesehh.vercel.app is live with fix
+- Key insight: PDFKit's text() draws at TOP of line box; different fonts
+  with different line box heights (Arabic ~2.11×F vs Latin ~1.12×F) need
+  Y-shifting to align visual baselines. The proper shift is
+  (arabicLineH - latinLineH), measurable at runtime via heightOfString().
