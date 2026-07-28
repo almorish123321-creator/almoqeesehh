@@ -207,19 +207,35 @@ export async function generateSickLeavePDF(
       // Measure each piece with its own font
       doc.font(fontToUse).fontSize(fontSize);
       const arabicWidths = trimmedPieces.map((p) => doc.widthOfString(p));
+      // Height of a typical Arabic letter at this fontSize — used to compute
+      // the baseline offset between Arabic and Times-Roman fonts.
+      const arabicH = doc.heightOfString("م");
 
       doc.font(fontEnUse).fontSize(fontSize);
       const slashWidth = doc.widthOfString("/");
+      const slashH = doc.heightOfString("/");
 
-      // Vertical offset: shift the slash DOWN to align with Arabic x-height.
-      // Empirical testing (see scripts/test-slash-align.cjs) found that
-      // fontSize * 0.3 produces the best visual alignment between Times-Roman
-      // slash and Noto Sans Arabic letters. The Arabic font has a taller em-box
-      // and the script sits lower, so the slash drawn at the same Y appears
-      // too high — shifting it down by ~30% of the font size aligns it.
-      const yOffset = fontSize * 0.3;
+      // Vertical offset: shift the slash DOWN to align its visual position
+      // with the Arabic letters' visual position.
+      //
+      // Why: PDFKit's text() draws at the TOP of the line box. Times-Roman
+      // has a short line box (~1.12 × fontSize); Noto Sans Arabic has a much
+      // taller line box (~2.11 × fontSize) because Arabic glyphs need room
+      // for diacritics. At the same Y, the Times-Roman "/" sits at the TOP
+      // of its short box (visually HIGH), while the Arabic letters sit at
+      // the BOTTOM of their tall box (visually LOW). The slash appears
+      // RAISED relative to the Arabic letters.
+      //
+      // Fix: shift the slash DOWN by (arabicH - slashH). This brings the
+      // slash's visual top down to match the Arabic letters' visual top.
+      // VLM-verified at fontSize=14: arabicH≈29.57pt, slashH≈15.62pt,
+      // diff≈13.94pt → perfect alignment.
+      const yOffset = arabicH - slashH;
 
-      const gap = fontSize * 0.1; // tight gap so slash sits close to the words
+      // No extra gap — the trimmed Arabic pieces already have natural side
+      // bearings from the font. Adding more gap makes the slash look
+      // detached from the words.
+      const gap = 0;
       const totalWidth =
         arabicWidths.reduce((s, w) => s + w, 0) +
         slashWidth * (pieces.length - 1) +
@@ -668,17 +684,29 @@ export async function generateSickLeavePDF(
   doc.font(fontEnReg);
   const hEn = doc.heightOfString(hDateFrom, { width: subColW - 20 });
 
-  // Unified baseline Y for ALL pieces in this cell (Arabic + English).
-  // The Arabic word "يوم" was rendering lower than the English dates/numbers
-  // because yAr and yEn were computed separately from different font heights.
-  // Using a single Y (based on the larger of the two heights) aligns
-  // everything on the same visual baseline.
+  // Measure baseline offset between Arabic and English fonts at durFontSize-1.
+  // PDFKit's text() draws at the TOP of the line box. Noto Sans Arabic has a
+  // much taller line box (~2.11 × fontSize) than Times-Roman (~1.12 × fontSize)
+  // because Arabic glyphs need room for diacritics. At the same Y, the Arabic
+  // letters sit at the BOTTOM of their tall box (visually LOW) while the
+  // Times-Roman glyphs sit at the TOP of their short box (visually HIGH).
+  // This is why "يوم" was rendering LOWER than the date numbers and parens.
+  //
+  // Fix: shift the Arabic pieces UP by (arabicLineH - englishLineH) so their
+  // visual baseline matches the Times-Roman visual baseline.
+  doc.font(fontArReg).fontSize(durFontSize - 1);
+  const arabicLineH = doc.heightOfString("م");
+  doc.font(fontEnReg).fontSize(durFontSize - 1);
+  const englishLineH = doc.heightOfString("0");
+  const baselineOffset = arabicLineH - englishLineH;
+
+  // Unified Y for English/digit pieces (parens, dates, number) — based on
+  // the LARGER of the two line heights so nothing overflows the row.
   const maxH = Math.max(hDur, hEn);
   const yEn = currentY + (rowH - maxH) / 2;
-  // Use the SAME Y for Arabic and English text. The Arabic font (Noto Sans
-  // Arabic) has slightly different internal metrics than Times-Roman, but at
-  // the same Y they render at comparable visual baselines.
-  const yAr = yEn;
+  // Shift Arabic pieces UP by baselineOffset so their visual baseline
+  // matches the Times-Roman pieces' visual baseline.
+  const yAr = yEn - baselineOffset;
 
   // 1. (
   drawTextEn(parenOpen, startXAr, yEn, {
