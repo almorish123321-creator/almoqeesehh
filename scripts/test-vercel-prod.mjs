@@ -1,4 +1,5 @@
-// Test the full PDF generation with a realistic payload to verify the QR code fix
+// Test the Vercel PRODUCTION deployment of /api/generate-pdf with a realistic payload.
+// Saves PDF to /tmp/vercel-test.pdf and converts to PNG for visual inspection.
 const payload = {
   id_number: "1122923749",
   patient_name_ar: "أحمد محمد السعيد",
@@ -21,7 +22,7 @@ const payload = {
   hospital_logo: ""
 };
 
-const res = await fetch("http://127.0.0.1:3199/api/generate-pdf", {
+const res = await fetch("https://almoqeesehh.vercel.app/api/generate-pdf", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify(payload),
@@ -34,18 +35,9 @@ if (!res.ok) {
 
 const buf = Buffer.from(await res.arrayBuffer());
 const fs = await import("fs");
-fs.writeFileSync("/tmp/qr-test.pdf", buf);
-console.log(`OK: ${buf.length} bytes saved to /tmp/qr-test.pdf`);
+fs.writeFileSync("/tmp/vercel-test.pdf", buf);
+console.log(`OK: ${buf.length} bytes saved to /tmp/vercel-test.pdf`);
 
-// Convert to PNG
 const { execSync } = await import("child_process");
-execSync("pdftoppm -r 200 -png /tmp/qr-test.pdf /tmp/qr-test", { stdio: "inherit" });
+execSync("pdftoppm -r 200 -png /tmp/vercel-test.pdf /tmp/vercel-test", { stdio: "inherit" });
 console.log("PNG saved.");
-
-// Also decode the QR code from the PDF using zbarimg if available
-try {
-  const out = execSync("zbarimg --raw /tmp/qr-test-1.png 2>/dev/null", { encoding: "utf-8" });
-  console.log("QR decoded:", out.trim());
-} catch (e) {
-  console.log("zbarimg not available, skipping QR decode");
-}
