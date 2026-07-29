@@ -191,11 +191,11 @@ export async function generateSickLeavePDF(
     // Noto Sans Arabic does NOT have the U+002F glyph — it renders as
     // tofu (empty box). We split the text on "/" and render each Arabic
     // piece with the Arabic font, the slash itself (with surrounding
-    // spaces) with Times-Roman.
+    // extra spaces) with Times-Bold.
     //
-    // Visual layout: "رقم الهوية / الإقامة" — a space BEFORE and AFTER
-    // the slash, matching the reference screenshot. The spaces are
-    // rendered with Times-Roman (since they fall between Latin runs).
+    // Visual layout: "رقم الهوية  /  الإقامة" — EXTRA space BEFORE and
+    // AFTER the slash (two spaces each side, per user request), and the
+    // slash is BOLD (Times-Bold) to stand out from the regular Arabic.
     //
     // Vertical alignment: Arabic fonts (Noto Sans Arabic) sit lower on
     // the baseline than Times-Roman at the same font size, so the slash
@@ -209,17 +209,19 @@ export async function generateSickLeavePDF(
       const pieces = String(text).split("/");
       const trimmedPieces = pieces.map((p) => p.trim());
 
-      // The visual line: piece0 + " / " + piece1 (with spaces around slash)
-      // We render: trimmedPieces[0] | " " | "/" | " " | trimmedPieces[1] | ...
-      const slashWithSpaces = " / ";
+      // The visual line: piece0 + "  /  " + piece1 — TWO spaces around
+      // the slash for extra breathing room, and the slash is always
+      // Times-Bold (regardless of options.weight) per user request.
+      const slashWithSpaces = "  /  ";
       const numSlashes = pieces.length - 1;
+      const slashFont = fontEnBold; // always bold for the slash
 
       // Measure each piece with its own font
       doc.font(fontToUse).fontSize(fontSize);
       const arabicWidths = trimmedPieces.map((p) => doc.widthOfString(p));
       const arabicH = doc.heightOfString("م");
 
-      doc.font(fontEnUse).fontSize(fontSize);
+      doc.font(slashFont).fontSize(fontSize);
       const slashGroupWidth = doc.widthOfString(slashWithSpaces);
       const slashH = doc.heightOfString("/");
 
@@ -243,7 +245,7 @@ export async function generateSickLeavePDF(
       }
 
       // Render pieces in visual RTL order:
-      // pieces[0] is the rightmost (first read in Arabic), then " / ",
+      // pieces[0] is the rightmost (first read in Arabic), then "  /  ",
       // then pieces[1] on the left, etc.
       let curX = startX;
 
@@ -258,8 +260,8 @@ export async function generateSickLeavePDF(
 
       // Then alternating slash-group + next piece
       for (let i = 1; i < trimmedPieces.length; i++) {
-        // " / " drawn at y + yOffset to align with Arabic baseline
-        doc.font(fontEnUse).fontSize(fontSize).fillColor(color);
+        // "  /  " drawn at y + yOffset to align with Arabic baseline
+        doc.font(slashFont).fontSize(fontSize).fillColor(color);
         doc.text(slashWithSpaces, curX, y + yOffset, {
           align: "left",
           lineBreak: false,
@@ -464,17 +466,14 @@ export async function generateSickLeavePDF(
   }
 
   if (fs.existsSync(headerLogoPath)) {
-    // Reduced from 180 → 140 per user feedback: "Kingdom of Saudi Arabia"
-    // text was too large compared to the reference screenshot. The reference
-    // shows the kingdom emblem as a small sub-header above the main title.
-    doc.image(headerLogoPath, (pageWidth - 140) / 2, 60, {
-      width: 140,
+    doc.image(headerLogoPath, (pageWidth - 180) / 2, 70, {
+      width: 180,
       align: "center",
     });
   } else {
     doc
       .font(fontEnBold)
-      .fontSize(11)
+      .fontSize(16)
       .text("Kingdom of Saudi Arabia", 0, 75, { align: "center" });
   }
 
