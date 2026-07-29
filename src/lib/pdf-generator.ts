@@ -190,7 +190,12 @@ export async function generateSickLeavePDF(
     // SPECIAL CASE: text contains "/" (forward slash).
     // Noto Sans Arabic does NOT have the U+002F glyph — it renders as
     // tofu (empty box). We split the text on "/" and render each Arabic
-    // piece with the Arabic font, the slash itself with Times-Roman.
+    // piece with the Arabic font, the slash itself (with surrounding
+    // spaces) with Times-Roman.
+    //
+    // Visual layout: "رقم الهوية / الإقامة" — a space BEFORE and AFTER
+    // the slash, matching the reference screenshot. The spaces are
+    // rendered with Times-Roman (since they fall between Latin runs).
     //
     // Vertical alignment: Arabic fonts (Noto Sans Arabic) sit lower on
     // the baseline than Times-Roman at the same font size, so the slash
@@ -204,42 +209,26 @@ export async function generateSickLeavePDF(
       const pieces = String(text).split("/");
       const trimmedPieces = pieces.map((p) => p.trim());
 
+      // The visual line: piece0 + " / " + piece1 (with spaces around slash)
+      // We render: trimmedPieces[0] | " " | "/" | " " | trimmedPieces[1] | ...
+      const slashWithSpaces = " / ";
+      const numSlashes = pieces.length - 1;
+
       // Measure each piece with its own font
       doc.font(fontToUse).fontSize(fontSize);
       const arabicWidths = trimmedPieces.map((p) => doc.widthOfString(p));
-      // Height of a typical Arabic letter at this fontSize — used to compute
-      // the baseline offset between Arabic and Times-Roman fonts.
       const arabicH = doc.heightOfString("م");
 
       doc.font(fontEnUse).fontSize(fontSize);
-      const slashWidth = doc.widthOfString("/");
+      const slashGroupWidth = doc.widthOfString(slashWithSpaces);
       const slashH = doc.heightOfString("/");
 
-      // Vertical offset: shift the slash DOWN to align its visual position
-      // with the Arabic letters' visual position.
-      //
-      // Why: PDFKit's text() draws at the TOP of the line box. Times-Roman
-      // has a short line box (~1.12 × fontSize); Noto Sans Arabic has a much
-      // taller line box (~2.11 × fontSize) because Arabic glyphs need room
-      // for diacritics. At the same Y, the Times-Roman "/" sits at the TOP
-      // of its short box (visually HIGH), while the Arabic letters sit at
-      // the BOTTOM of their tall box (visually LOW). The slash appears
-      // RAISED relative to the Arabic letters.
-      //
-      // Fix: shift the slash DOWN by (arabicH - slashH). This brings the
-      // slash's visual top down to match the Arabic letters' visual top.
-      // VLM-verified at fontSize=14: arabicH≈29.57pt, slashH≈15.62pt,
-      // diff≈13.94pt → perfect alignment.
+      // Vertical offset: shift the slash group DOWN to align with Arabic baseline
       const yOffset = arabicH - slashH;
 
-      // No extra gap — the trimmed Arabic pieces already have natural side
-      // bearings from the font. Adding more gap makes the slash look
-      // detached from the words.
-      const gap = 0;
       const totalWidth =
         arabicWidths.reduce((s, w) => s + w, 0) +
-        slashWidth * (pieces.length - 1) +
-        gap * 2 * (pieces.length - 1);
+        slashGroupWidth * numSlashes;
 
       // Compute start X based on alignment within the optional width
       let startX = x;
@@ -254,7 +243,7 @@ export async function generateSickLeavePDF(
       }
 
       // Render pieces in visual RTL order:
-      // pieces[0] is the rightmost (first read in Arabic), then slash,
+      // pieces[0] is the rightmost (first read in Arabic), then " / ",
       // then pieces[1] on the left, etc.
       let curX = startX;
 
@@ -265,17 +254,17 @@ export async function generateSickLeavePDF(
         align: "left",
         lineBreak: false,
       });
-      curX += arabicWidths[0] + gap;
+      curX += arabicWidths[0];
 
-      // Then alternating slash + next piece
+      // Then alternating slash-group + next piece
       for (let i = 1; i < trimmedPieces.length; i++) {
-        // Slash drawn at y + yOffset to align with Arabic baseline
+        // " / " drawn at y + yOffset to align with Arabic baseline
         doc.font(fontEnUse).fontSize(fontSize).fillColor(color);
-        doc.text("/", curX, y + yOffset, {
+        doc.text(slashWithSpaces, curX, y + yOffset, {
           align: "left",
           lineBreak: false,
         });
-        curX += slashWidth + gap;
+        curX += slashGroupWidth;
 
         doc.font(fontToUse).fontSize(fontSize).fillColor(color);
         doc.text(trimmedPieces[i], curX, y, {
@@ -283,7 +272,7 @@ export async function generateSickLeavePDF(
           align: "left",
           lineBreak: false,
         });
-        curX += arabicWidths[i] + gap;
+        curX += arabicWidths[i];
       }
       return;
     }
@@ -330,6 +319,143 @@ export async function generateSickLeavePDF(
   };
 
   // ============================================================
+  // drawMixedText — renders mixed Arabic + Latin/digit text on a
+  // single visual baseline.
+  //
+  // Why: Noto Sans Arabic does NOT have glyphs for ASCII digits
+  // (0-9), the forward slash '/', or other Latin punctuation. They
+  // render as tofu boxes. The original code only handled '/' as a
+  // special case; this helper generalizes that approach to ANY
+  // text containing both Arabic and Latin/digit characters.
+  //
+  // Strategy:
+  //   - Split the text into runs: Arabic runs (rendered with NotoArabic
+  //     + rtla feature for proper shaping + RTL ordering) and Latin/digit
+  //     runs (rendered with Times-Roman).
+  //   - Measure each run with its own font.
+  //   - Place runs in VISUAL RTL order: rightmost run first.
+  //   - Apply a vertical Y-offset to the Latin runs so their visual
+  //     baseline aligns with the Arabic visual baseline (because the
+  //     Arabic line box is ~2x taller than the Times line box).
+  // ============================================================
+  const drawMixedText = (
+    text: string,
+    x: number,
+    y: number,
+    options: DrawOpts = {},
+  ) => {
+    if (!useArabicFont) {
+      drawTextEn(text, x, y, options);
+      return;
+    }
+
+    const fontSize = options.fontSize || 12;
+    const color = options.color || "#000000";
+    const weight = options.weight || "regular";
+    const fontArabic = weight === "bold" ? fontArBold : fontArReg;
+    const fontLatin = weight === "bold" ? fontEnBold : fontEnReg;
+
+    // Split text into runs of Arabic vs Latin/digit/punctuation.
+    // Arabic range: \u0600-\u06FF (Arabic), \u0750-\u077F (Arabic Supplement),
+    // \uFB50-\uFDFF (Arabic Presentation Forms-A), \uFE70-\uFEFF (Forms-B),
+    // plus Arabic comma/semicolon \u060C \u061B and space (treated as Arabic).
+    const arabicChar = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
+    const isArabicChar = (ch: string) => arabicChar.test(ch);
+
+    // Tokenize: each run is either all-Arabic-or-space, or all-non-Arabic.
+    type Run = { text: string; isArabic: boolean };
+    const runs: Run[] = [];
+    let i = 0;
+    while (i < text.length) {
+      const ch = text[i];
+      const thisArabic = isArabicChar(ch) || ch === " ";
+      let j = i + 1;
+      while (j < text.length) {
+        const nextArabic = isArabicChar(text[j]) || text[j] === " ";
+        if (nextArabic !== thisArabic) break;
+        j++;
+      }
+      // Trailing space on a Latin run should be moved to the next Arabic run
+      // (or treated as Arabic) — for simplicity we keep runs as parsed but
+      // later render them with appropriate fonts.
+      runs.push({ text: text.slice(i, j), isArabic: thisArabic });
+      i = j;
+    }
+
+    // Skip mixed-text rendering if there's only one Arabic run (no digits/Latin).
+    // In that case fall back to drawTextAr default.
+    const hasMixed = runs.some((r) => r.isArabic) && runs.some((r) => !r.isArabic);
+    if (!hasMixed) {
+      // All Arabic, or all Latin — fall back to default path
+      const defaultOptions: DrawOpts = {
+        align: "right",
+        features: ["rtla"],
+      };
+      if (options.fontSize) doc.fontSize(options.fontSize);
+      if (options.color) doc.fillColor(options.color);
+      doc.font(fontArabic).text(text, x, y, { ...defaultOptions, ...options });
+      return;
+    }
+
+    // Compute run widths with their respective fonts
+    doc.font(fontArabic).fontSize(fontSize);
+    const arabicLineH = doc.heightOfString("م");
+    const arabicRunWidths = runs.map((r) =>
+      r.isArabic ? doc.widthOfString(r.text) : 0,
+    );
+
+    doc.font(fontLatin).fontSize(fontSize);
+    const latinLineH = doc.heightOfString("0");
+    const latinRunWidths = runs.map((r) =>
+      !r.isArabic ? doc.widthOfString(r.text) : 0,
+    );
+
+    const runWidths = runs.map((r, idx) =>
+      r.isArabic ? arabicRunWidths[idx] : latinRunWidths[idx],
+    );
+
+    const totalWidth = runWidths.reduce((s, w) => s + w, 0);
+
+    // Compute start X based on alignment
+    let startX = x;
+    if (options.align === "center" && options.width) {
+      startX = x + (options.width - totalWidth) / 2;
+    } else if (options.align === "right" && options.width) {
+      startX = x + options.width - totalWidth;
+    } else if (options.align === "left" || !options.align) {
+      startX = x;
+    } else if (options.align === "right" && !options.width) {
+      startX = x - totalWidth;
+    }
+
+    // Vertical offset: shift Latin runs DOWN to align with Arabic baseline
+    const yOffset = arabicLineH - latinLineH;
+
+    // Render runs in visual order (left to right in the line).
+    // Note: each Arabic run's internal text is already shaped + reordered
+    // by NotoArabic + rtla, so it will appear correctly RTL within its run.
+    let curX = startX;
+    for (let k = 0; k < runs.length; k++) {
+      const run = runs[k];
+      if (run.isArabic) {
+        doc.font(fontArabic).fontSize(fontSize).fillColor(color);
+        doc.text(run.text, curX, y, {
+          features: ["rtla"],
+          align: "left",
+          lineBreak: false,
+        });
+      } else {
+        doc.font(fontLatin).fontSize(fontSize).fillColor(color);
+        doc.text(run.text, curX, y + yOffset, {
+          align: "left",
+          lineBreak: false,
+        });
+      }
+      curX += runWidths[k];
+    }
+  };
+
+  // ============================================================
   // HEADER — identical to original
   // ============================================================
 
@@ -338,14 +464,17 @@ export async function generateSickLeavePDF(
   }
 
   if (fs.existsSync(headerLogoPath)) {
-    doc.image(headerLogoPath, (pageWidth - 180) / 2, 70, {
-      width: 180,
+    // Reduced from 180 → 140 per user feedback: "Kingdom of Saudi Arabia"
+    // text was too large compared to the reference screenshot. The reference
+    // shows the kingdom emblem as a small sub-header above the main title.
+    doc.image(headerLogoPath, (pageWidth - 140) / 2, 60, {
+      width: 140,
       align: "center",
     });
   } else {
     doc
       .font(fontEnBold)
-      .fontSize(16)
+      .fontSize(11)
       .text("Kingdom of Saudi Arabia", 0, 75, { align: "center" });
   }
 
@@ -649,124 +778,42 @@ export async function generateSickLeavePDF(
     weight: "regular",
   });
 
-  // Arabic duration — manual piece-by-piece drawing (same as original)
-  // Visual order: ( date2 separator date1 ) durText durNum
-  const durArText = durText;
-  const durNum = (durArText.match(/\d+/) || ["0"])[0];
-  const durTxt = durArText.replace(/[0-9]/g, "").trim();
+  // Arabic duration — rendered as a single mixed line via drawMixedText.
+  //
+  // Target visual order (per user's reference screenshot):
+  //     "1 يوم (09-06-2026 الى 09-06-2026)"
+  // i.e. number first, then "يوم", then space, then "(date الى date)".
+  //
+  // We construct the line in visual LTR order (left to right) and let
+  // drawMixedText handle splitting into Arabic + Latin runs. Inside each
+  // Arabic run, the rtla feature shapes the letters and reorders them
+  // correctly, so "يوم" and "الى" appear correctly RTL within their runs.
+  const durNum = (durText.match(/\d+/) || ["0"])[0];
+  const durTxt = durText.replace(/[0-9]/g, "").trim();
 
   const hDateFrom = startDateFormatted || "-";
   const hDateTo = endDateFormatted || "-";
-  const separator = " الى ";
-  const parenOpen = "(";
-  const parenClose = ")";
-  const space = " ";
 
-  doc.font(fontArReg).fontSize(durFontSize - 1);
-  const wDurTxt = doc.widthOfString(durTxt);
-  const wSep = doc.widthOfString(separator);
+  // Construct:  "<num> <durTxt> (<hDateFrom> الى <hDateTo>)"
+  // Note: visual order is num, durTxt, paren, dateFrom, الى, dateTo, paren.
+  // This matches the reference screenshot's reading flow.
+  const arDurLine = `${durNum} ${durTxt} (${hDateFrom} الى ${hDateTo})`;
 
-  doc.font(fontEnReg).fontSize(durFontSize - 1);
-  const wDurNum = doc.widthOfString(durNum);
-  const wSpace = doc.widthOfString(space);
-  const wDate1 = doc.widthOfString(hDateFrom);
-  const wDate2 = doc.widthOfString(hDateTo);
-  const wParen1 = doc.widthOfString(parenOpen);
-  const wParen2 = doc.widthOfString(parenClose);
-
-  const totalWAr =
-    wParen2 + wDate2 + wSep + wDate1 + wParen1 + wSpace + wDurTxt + wSpace + wDurNum;
-  let startXAr = startX + col1W + subColW + (subColW - totalWAr) / 2;
-
-  doc.font(fontArReg);
-  const hDur = doc.heightOfString(durTxt, { width: subColW - 20 });
-
-  doc.font(fontEnReg);
-  const hEn = doc.heightOfString(hDateFrom, { width: subColW - 20 });
-
-  // Measure baseline offset between Arabic and English fonts at durFontSize-1.
-  // PDFKit's text() draws at the TOP of the line box. Noto Sans Arabic has a
-  // much taller line box (~2.11 × fontSize) than Times-Roman (~1.12 × fontSize)
-  // because Arabic glyphs need room for diacritics. At the same Y, the Arabic
-  // letters sit at the BOTTOM of their tall box (visually LOW) while the
-  // Times-Roman glyphs sit at the TOP of their short box (visually HIGH).
-  // This is why "يوم" was rendering LOWER than the date numbers and parens.
-  //
-  // Fix: shift the Arabic pieces UP by (arabicLineH - englishLineH) so their
-  // visual baseline matches the Times-Roman visual baseline.
+  // Compute the unified baseline Y for the cell.
   doc.font(fontArReg).fontSize(durFontSize - 1);
   const arabicLineH = doc.heightOfString("م");
   doc.font(fontEnReg).fontSize(durFontSize - 1);
   const englishLineH = doc.heightOfString("0");
-  const baselineOffset = arabicLineH - englishLineH;
 
-  // Unified Y for English/digit pieces (parens, dates, number) — based on
-  // the LARGER of the two line heights so nothing overflows the row.
-  const maxH = Math.max(hDur, hEn);
-  const yEn = currentY + (rowH - maxH) / 2;
-  // Shift Arabic pieces UP by baselineOffset so their visual baseline
-  // matches the Times-Roman pieces' visual baseline.
-  const yAr = yEn - baselineOffset;
+  // Cell vertical centering: use the LARGER line height (Arabic) so the
+  // whole mixed line fits. The Latin runs will be offset down inside
+  // drawMixedText to align with the Arabic baseline.
+  const maxLineH = Math.max(arabicLineH, englishLineH);
+  const yCell = currentY + (rowH - maxLineH) / 2;
 
-  // 1. (
-  drawTextEn(parenOpen, startXAr, yEn, {
-    align: "left",
-    fontSize: durFontSize - 1,
-    color: "#ffffff",
-    weight: "regular",
-  });
-  startXAr += wParen1;
-
-  // 2. Date To
-  drawTextEn(hDateTo, startXAr, yEn, {
-    align: "left",
-    fontSize: durFontSize - 1,
-    color: "#ffffff",
-    weight: "regular",
-  });
-  startXAr += wDate2;
-
-  // 3. Separator (Ar)
-  drawTextAr(separator, startXAr, yAr, {
-    align: "left",
-    fontSize: durFontSize - 1,
-    color: "#ffffff",
-    weight: "regular",
-  });
-  startXAr += wSep;
-
-  // 4. Date From
-  drawTextEn(hDateFrom, startXAr, yEn, {
-    align: "left",
-    fontSize: durFontSize - 1,
-    color: "#ffffff",
-    weight: "regular",
-  });
-  startXAr += wDate1;
-
-  // 5. )
-  drawTextEn(parenClose, startXAr, yEn, {
-    align: "left",
-    fontSize: durFontSize - 1,
-    color: "#ffffff",
-    weight: "regular",
-  });
-  startXAr += wParen2;
-  startXAr += wSpace; // space between ) and Duration
-
-  // 6. Duration Text (Ar)
-  drawTextAr(durTxt, startXAr, yAr, {
-    align: "left",
-    fontSize: durFontSize - 1,
-    color: "#ffffff",
-    weight: "regular",
-  });
-  startXAr += wDurTxt;
-  startXAr += wSpace;
-
-  // 7. Duration Number (En)
-  drawTextEn(durNum, startXAr, yEn, {
-    align: "left",
+  drawMixedText(arDurLine, startX + col1W + subColW + 10, yCell, {
+    width: subColW - 20,
+    align: "center",
     fontSize: durFontSize - 1,
     color: "#ffffff",
     weight: "regular",
@@ -966,16 +1013,15 @@ export async function generateSickLeavePDF(
     const licNum = emptyIndicators.has(rawLic.trim()) ? "" : rawLic.trim();
 
     if (licNum) {
-      // Same approach as the original: render the full mixed line via
-      // drawTextAr (which handles Arabic shaping + RTL).
+      // Render the full mixed line via drawMixedText. Noto Sans Arabic
+      // lacks ASCII digit glyphs (0-9), so digits must be rendered with
+      // Times-Bold on the same baseline as the Arabic. drawMixedText
+      // handles the Arabic/Latin run splitting + baseline offset.
       const fullLine = `رقم الترخيص : ${licNum}`;
 
-      doc.font(fontArBold).fontSize(12);
-      const lineW = doc.widthOfString(fullLine);
-      const startXLic = rightCenterX - lineW / 2;
-
-      drawTextAr(fullLine, startXLic, footerY + 165, {
-        align: "left",
+      drawMixedText(fullLine, rightCenterX - 125, footerY + 165, {
+        width: 250,
+        align: "center",
         weight: "bold",
         fontSize: 12,
         color: "#000000",
