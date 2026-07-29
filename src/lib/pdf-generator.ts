@@ -92,24 +92,41 @@ export async function generateSickLeavePDF(
   // In Next.js (Vercel), `process.cwd()` is the project root at runtime.
   const rootDir = process.cwd();
 
-  // Font Paths — Amiri (traditional Naskh-style Arabic serif font).
-  // User explicitly requested Amiri for cell 2 of row 2 (the Arabic
-  // duration cell) to match their reference screenshot. We use Amiri
-  // globally for visual consistency across the whole PDF.
+  // Font Paths — original setup: Noto Sans Arabic (primary) + Almarai (fallback).
+  // User reverted to original fonts: only cell 2 of row 2 (Arabic duration cell)
+  // uses Amiri (loaded below as a separate optional font for that cell only).
+  //
+  // Fallback chain (for all Arabic text EXCEPT cell 2 of row 2):
+  //   1. Noto Sans Arabic (preferred, original)
+  //   2. Almarai (fallback)
+  //   3. Helvetica (last resort)
+  const fontArabicRegPath = path.join(
+    rootDir,
+    "node_modules",
+    "@fontsource",
+    "noto-sans-arabic",
+    "files",
+    "noto-sans-arabic-arabic-400-normal.woff",
+  );
+  const fontArabicBoldPath = path.join(
+    rootDir,
+    "node_modules",
+    "@fontsource",
+    "noto-sans-arabic",
+    "files",
+    "noto-sans-arabic-arabic-700-normal.woff",
+  );
+
+  // Amiri font — used ONLY for cell 2 of row 2 (Arabic duration cell) per
+  // user request. Loaded as separate optional fonts so the rest of the PDF
+  // keeps using Noto Sans Arabic.
   //
   // Amiri ships two subsets:
   //   - amiri-arabic-*  : Arabic glyphs only (no Latin digits, no slash)
   //   - amiri-latin-*   : Latin + digits + slash (no Arabic)
-  // drawMixedText splits mixed Arabic/Latin text into runs and renders
-  // each run with its corresponding Amiri subset, so cells like the
-  // Arabic duration "1 يوم (13-10-2026 إلى 13-10-2026)" render
-  // perfectly with no tofu boxes for digits or slashes.
-  //
-  // Fallback chain:
-  //   1. Amiri (preferred)
-  //   2. Noto Sans Arabic (modern fallback)
-  //   3. Helvetica (last resort)
-  const fontArabicRegPath = path.join(
+  // drawMixedText with useAmiri=true uses these for the Arabic and Latin
+  // runs respectively, giving the duration cell a fully Amiri-styled look.
+  const fontAmiriArabicRegPath = path.join(
     rootDir,
     "node_modules",
     "@fontsource",
@@ -117,7 +134,7 @@ export async function generateSickLeavePDF(
     "files",
     "amiri-arabic-400-normal.woff",
   );
-  const fontArabicBoldPath = path.join(
+  const fontAmiriArabicBoldPath = path.join(
     rootDir,
     "node_modules",
     "@fontsource",
@@ -125,13 +142,6 @@ export async function generateSickLeavePDF(
     "files",
     "amiri-arabic-700-normal.woff",
   );
-
-  // Amiri-Latin subset — used for Latin/digit runs inside drawMixedText.
-  // Amiri-Arabic lacks Latin digit glyphs (0-9) and the forward slash,
-  // so mixed Arabic+digit text (e.g. "1 يوم (13-10-2026 إلى 13-10-2026)")
-  // needs Amiri-Latin for the digit/slash runs to render with the same
-  // Amiri visual style as the surrounding Arabic. Times-Roman is kept as
-  // the fallback for English-only labels (Sick Leave Report, etc.).
   const fontAmiriLatinRegPath = path.join(
     rootDir,
     "node_modules",
@@ -148,6 +158,11 @@ export async function generateSickLeavePDF(
     "files",
     "amiri-latin-700-normal.woff",
   );
+  const amiriAvailable =
+    fs.existsSync(fontAmiriArabicRegPath) &&
+    fs.existsSync(fontAmiriArabicBoldPath) &&
+    fs.existsSync(fontAmiriLatinRegPath) &&
+    fs.existsSync(fontAmiriLatinBoldPath);
 
   const fontEnReg = "Times-Roman";
   const fontEnBold = "Times-Bold";
@@ -161,27 +176,27 @@ export async function generateSickLeavePDF(
     fontArBold = fontArabicBoldPath;
     useArabicFont = true;
   } else {
-    // Fallback to Noto Sans Arabic if Amiri is not installed
-    const notoReg = path.join(
+    // Fallback to Almarai
+    const almaraiReg = path.join(
       rootDir,
       "node_modules",
       "@fontsource",
-      "noto-sans-arabic",
+      "almarai",
       "files",
-      "noto-sans-arabic-arabic-400-normal.woff",
+      "almarai-arabic-400-normal.woff",
     );
-    const notoBold = path.join(
+    const almaraiBold = path.join(
       rootDir,
       "node_modules",
       "@fontsource",
-      "noto-sans-arabic",
+      "almarai",
       "files",
-      "noto-sans-arabic-arabic-700-normal.woff",
+      "almarai-arabic-700-normal.woff",
     );
 
-    if (fs.existsSync(notoReg) && fs.existsSync(notoBold)) {
-      fontArReg = notoReg;
-      fontArBold = notoBold;
+    if (fs.existsSync(almaraiReg) && fs.existsSync(almaraiBold)) {
+      fontArReg = almaraiReg;
+      fontArBold = almaraiBold;
       useArabicFont = true;
     }
     // else: keep Helvetica fallback
@@ -390,22 +405,19 @@ export async function generateSickLeavePDF(
     const fontSize = options.fontSize || 12;
     const color = options.color || "#000000";
     const weight = options.weight || "regular";
-    const fontArabic = weight === "bold" ? fontArBold : fontArReg;
 
-    // For the Latin/digit runs inside mixed Arabic+digit text, use
-    // Amiri-Latin (the Latin subset of Amiri) so the digits visually
-    // match the Amiri-Arabic text. Fall back to Times-Roman if Amiri-Latin
-    // is not available (e.g. Amiri package not installed).
-    const amiriLatinAvailable =
-      fs.existsSync(fontAmiriLatinRegPath) &&
-      fs.existsSync(fontAmiriLatinBoldPath);
-    const fontLatinReg = amiriLatinAvailable
-      ? fontAmiriLatinRegPath
-      : fontEnReg;
-    const fontLatinBold = amiriLatinAvailable
-      ? fontAmiriLatinBoldPath
-      : fontEnBold;
-    const fontLatin = weight === "bold" ? fontLatinBold : fontLatinReg;
+    // Font selection — by default we use the global Arabic font (Noto Sans
+    // Arabic) for Arabic runs and Times-Roman for Latin/digit runs.
+    // Caller can pass `useAmiri: true` to override BOTH with Amiri
+    // (Amiri-Arabic for Arabic runs, Amiri-Latin for Latin/digit runs).
+    // Used only for cell 2 of row 2 (Arabic duration cell) per user request.
+    const useAmiri = options.useAmiri === true && amiriAvailable;
+    const fontArabic = useAmiri
+      ? (weight === "bold" ? fontAmiriArabicBoldPath : fontAmiriArabicRegPath)
+      : (weight === "bold" ? fontArBold : fontArReg);
+    const fontLatin = useAmiri
+      ? (weight === "bold" ? fontAmiriLatinBoldPath : fontAmiriLatinRegPath)
+      : (weight === "bold" ? fontEnBold : fontEnReg);
 
     // Split text into runs of Arabic vs Latin/digit/punctuation.
     // Arabic range: \u0600-\u06FF (Arabic), \u0750-\u077F (Arabic Supplement),
@@ -829,29 +841,40 @@ export async function generateSickLeavePDF(
 
   // Arabic duration — rendered as a single mixed line via drawMixedText.
   //
-  // Target visual order (per user's reference screenshot):
-  //     "1 يوم (09-06-2026 الى 09-06-2026)"
-  // i.e. number first, then "يوم", then space, then "(date الى date)".
+  // Target visual order (per user's latest request — match reference image):
+  //     "(date الى date) 1 يوم"
+  // i.e. DATES on the LEFT, "1 يوم" (number + day word) on the RIGHT.
+  // This is the natural Arabic RTL reading order: reader starts at the
+  // right (sees "1 يوم" first) then moves left (sees the dates).
   //
-  // We construct the line in visual LTR order (left to right) and let
-  // drawMixedText handle splitting into Arabic + Latin runs. Inside each
-  // Arabic run, the rtla feature shapes the letters and reorders them
-  // correctly, so "يوم" and "الى" appear correctly RTL within their runs.
+  // We construct the line in visual LTR order (left to right) so that
+  // drawMixedText places the runs left-to-right with dates first, then
+  // the number, then "يوم" — visually: dates on left, "1 يوم" on right.
+  //
+  // Font: this cell uses Amiri (Amiri-Arabic for Arabic runs, Amiri-Latin
+  // for digit/Latin runs) per user request — see useAmiri option below.
+  // All other cells in the PDF keep using Noto Sans Arabic.
   const durNum = (durText.match(/\d+/) || ["0"])[0];
   const durTxt = durText.replace(/[0-9]/g, "").trim();
 
   const hDateFrom = startDateFormatted || "-";
   const hDateTo = endDateFormatted || "-";
 
-  // Construct:  "<num> <durTxt> (<hDateFrom> الى <hDateTo>)"
-  // Note: visual order is num, durTxt, paren, dateFrom, الى, dateTo, paren.
-  // This matches the reference screenshot's reading flow.
-  const arDurLine = `${durNum} ${durTxt} (${hDateFrom} الى ${hDateTo})`;
+  // Construct:  "(<hDateFrom> الى <hDateTo>) <durNum> <durTxt>"
+  // Visual LTR order: dates-paren, number, day-word
+  // Visual result: dates on LEFT, "1 يوم" on RIGHT (matches user image).
+  const arDurLine = `(${hDateFrom} الى ${hDateTo}) ${durNum} ${durTxt}`;
 
   // Compute the unified baseline Y for the cell.
-  doc.font(fontArReg).fontSize(durFontSize - 1);
+  // Use Amiri line metrics here (since this cell uses Amiri) so vertical
+  // centering matches the actual rendered line height.
+  doc
+    .font(amiriAvailable ? fontAmiriArabicRegPath : fontArReg)
+    .fontSize(durFontSize - 1);
   const arabicLineH = doc.heightOfString("م");
-  doc.font(fontEnReg).fontSize(durFontSize - 1);
+  doc
+    .font(amiriAvailable ? fontAmiriLatinRegPath : fontEnReg)
+    .fontSize(durFontSize - 1);
   const englishLineH = doc.heightOfString("0");
 
   // Cell vertical centering: use the LARGER line height (Arabic) so the
@@ -866,6 +889,7 @@ export async function generateSickLeavePDF(
     fontSize: durFontSize - 1,
     color: "#ffffff",
     weight: "regular",
+    useAmiri: true, // <-- Amiri only for this cell, rest stays Noto Sans Arabic
   });
 
   doc.restore();
