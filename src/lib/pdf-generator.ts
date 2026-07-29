@@ -528,8 +528,8 @@ export async function generateSickLeavePDF(
   }
 
   if (fs.existsSync(headerLogoPath)) {
-    doc.image(headerLogoPath, (pageWidth - 340) / 2, 30, {
-      width: 340,
+    doc.image(headerLogoPath, (pageWidth - 260) / 2, 50, {
+      width: 260,
       align: "center",
     });
   } else {
@@ -1096,7 +1096,14 @@ export async function generateSickLeavePDF(
       // lacks ASCII digit glyphs (0-9), so digits must be rendered with
       // Times-Bold on the same baseline as the Arabic. drawMixedText
       // handles the Arabic/Latin run splitting + baseline offset.
-      const fullLine = `رقم الترخيص : ${licNum}`;
+      //
+      // Visual order target (per user request — digits on LEFT, label on RIGHT):
+      //     Visual LTR:  "<licNum> : رقم الترخيص"
+      //     Reading RTL: "رقم الترخيص : <licNum>"
+      // Place digits first in the string so they end up on the LEFT side
+      // visually; "رقم الترخيص" goes last so it ends up on the RIGHT side
+      // (read first in RTL — matches Arabic reading order).
+      const fullLine = `${licNum} : رقم الترخيص`;
 
       drawMixedText(fullLine, rightCenterX - 125, footerY + 165, {
         width: 250,
