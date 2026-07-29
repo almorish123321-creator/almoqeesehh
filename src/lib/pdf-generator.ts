@@ -92,25 +92,61 @@ export async function generateSickLeavePDF(
   // In Next.js (Vercel), `process.cwd()` is the project root at runtime.
   const rootDir = process.cwd();
 
-  // Font Paths — same fallback chain as the original:
-  // 1. @fontsource/noto-sans-arabic (woff)
-  // 2. @fontsource/almarai (woff) — fallback
-  // 3. Helvetica — last-resort fallback
+  // Font Paths — Amiri (traditional Naskh-style Arabic serif font).
+  // User explicitly requested Amiri for cell 2 of row 2 (the Arabic
+  // duration cell) to match their reference screenshot. We use Amiri
+  // globally for visual consistency across the whole PDF.
+  //
+  // Amiri ships two subsets:
+  //   - amiri-arabic-*  : Arabic glyphs only (no Latin digits, no slash)
+  //   - amiri-latin-*   : Latin + digits + slash (no Arabic)
+  // drawMixedText splits mixed Arabic/Latin text into runs and renders
+  // each run with its corresponding Amiri subset, so cells like the
+  // Arabic duration "1 يوم (13-10-2026 إلى 13-10-2026)" render
+  // perfectly with no tofu boxes for digits or slashes.
+  //
+  // Fallback chain:
+  //   1. Amiri (preferred)
+  //   2. Noto Sans Arabic (modern fallback)
+  //   3. Helvetica (last resort)
   const fontArabicRegPath = path.join(
     rootDir,
     "node_modules",
     "@fontsource",
-    "noto-sans-arabic",
+    "amiri",
     "files",
-    "noto-sans-arabic-arabic-400-normal.woff",
+    "amiri-arabic-400-normal.woff",
   );
   const fontArabicBoldPath = path.join(
     rootDir,
     "node_modules",
     "@fontsource",
-    "noto-sans-arabic",
+    "amiri",
     "files",
-    "noto-sans-arabic-arabic-700-normal.woff",
+    "amiri-arabic-700-normal.woff",
+  );
+
+  // Amiri-Latin subset — used for Latin/digit runs inside drawMixedText.
+  // Amiri-Arabic lacks Latin digit glyphs (0-9) and the forward slash,
+  // so mixed Arabic+digit text (e.g. "1 يوم (13-10-2026 إلى 13-10-2026)")
+  // needs Amiri-Latin for the digit/slash runs to render with the same
+  // Amiri visual style as the surrounding Arabic. Times-Roman is kept as
+  // the fallback for English-only labels (Sick Leave Report, etc.).
+  const fontAmiriLatinRegPath = path.join(
+    rootDir,
+    "node_modules",
+    "@fontsource",
+    "amiri",
+    "files",
+    "amiri-latin-400-normal.woff",
+  );
+  const fontAmiriLatinBoldPath = path.join(
+    rootDir,
+    "node_modules",
+    "@fontsource",
+    "amiri",
+    "files",
+    "amiri-latin-700-normal.woff",
   );
 
   const fontEnReg = "Times-Roman";
@@ -125,27 +161,27 @@ export async function generateSickLeavePDF(
     fontArBold = fontArabicBoldPath;
     useArabicFont = true;
   } else {
-    // Fallback to Almarai
-    const almaraiReg = path.join(
+    // Fallback to Noto Sans Arabic if Amiri is not installed
+    const notoReg = path.join(
       rootDir,
       "node_modules",
       "@fontsource",
-      "almarai",
+      "noto-sans-arabic",
       "files",
-      "almarai-arabic-400-normal.woff",
+      "noto-sans-arabic-arabic-400-normal.woff",
     );
-    const almaraiBold = path.join(
+    const notoBold = path.join(
       rootDir,
       "node_modules",
       "@fontsource",
-      "almarai",
+      "noto-sans-arabic",
       "files",
-      "almarai-arabic-700-normal.woff",
+      "noto-sans-arabic-arabic-700-normal.woff",
     );
 
-    if (fs.existsSync(almaraiReg) && fs.existsSync(almaraiBold)) {
-      fontArReg = almaraiReg;
-      fontArBold = almaraiBold;
+    if (fs.existsSync(notoReg) && fs.existsSync(notoBold)) {
+      fontArReg = notoReg;
+      fontArBold = notoBold;
       useArabicFont = true;
     }
     // else: keep Helvetica fallback
@@ -355,7 +391,21 @@ export async function generateSickLeavePDF(
     const color = options.color || "#000000";
     const weight = options.weight || "regular";
     const fontArabic = weight === "bold" ? fontArBold : fontArReg;
-    const fontLatin = weight === "bold" ? fontEnBold : fontEnReg;
+
+    // For the Latin/digit runs inside mixed Arabic+digit text, use
+    // Amiri-Latin (the Latin subset of Amiri) so the digits visually
+    // match the Amiri-Arabic text. Fall back to Times-Roman if Amiri-Latin
+    // is not available (e.g. Amiri package not installed).
+    const amiriLatinAvailable =
+      fs.existsSync(fontAmiriLatinRegPath) &&
+      fs.existsSync(fontAmiriLatinBoldPath);
+    const fontLatinReg = amiriLatinAvailable
+      ? fontAmiriLatinRegPath
+      : fontEnReg;
+    const fontLatinBold = amiriLatinAvailable
+      ? fontAmiriLatinBoldPath
+      : fontEnBold;
+    const fontLatin = weight === "bold" ? fontLatinBold : fontLatinReg;
 
     // Split text into runs of Arabic vs Latin/digit/punctuation.
     // Arabic range: \u0600-\u06FF (Arabic), \u0750-\u077F (Arabic Supplement),
