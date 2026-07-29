@@ -2391,3 +2391,51 @@ Stage Summary:
 - Key new helper: drawMixedText() — reusable function for any mixed Arabic + Latin/digit text rendering, properly handling font switching, baseline alignment, and visual order
 - Production deployment at https://almoqeesehh.vercel.app is live with all fixes
 - Reference screenshot matched: kingdom size smaller, يوم order number-first, slash with spaces, license digits visible
+
+---
+Task ID: PDF-REVERT-KINGDOM-BOLD-SLASH
+Agent: main
+Task: Revert kingdom size, make slash bold with extra spaces, confirm row 2 centering
+
+Work Log:
+- User feedback: "اعد كلمه كندومkingdom..... مع البسمله كما كانت" — revert kingdom size
+- User feedback: "الخليه رقم 2 من السطر الثاني اعد ترتيب نصها كما كان يعني الرقم بعدين كلمه يوم بعدين القوسين يحتويان التواريخ واجعل الخليه النص في منتصفها مثل باقي الخلايا" — confirm row 2 order (number → يوم → parens with dates) and ensure text is centered like other cells
+- User feedback: "والشرطه بين الهويه والاقامه خليه blod واضف مسافه اضافيه قبلها وبعدها" — make slash bold, add extra space before/after
+
+- Reverted kingdom header image: 140pt → 180pt, y=60 → 70, fallback fontSize 11 → 16
+
+- Updated slash handler in drawTextAr:
+  * Was: slashWithSpaces = " / " (1 space each side)
+  * Now: slashWithSpaces = "  /  " (2 spaces each side)
+  * Was: slashFont = fontEnUse (depends on options.weight)
+  * Now: slashFont = fontEnBold (ALWAYS bold, regardless of options.weight)
+
+- Confirmed Row 2 Arabic cell order is correct: '1 يوم (09-06-2026 الى 09-06-2026)'
+  (number, then يوم word, then parens with dates) — no change needed
+- VLM confirmed text is vertically centered and all 4 cells same level
+
+- Pixel analysis on slash region:
+  * Slash at x=1946-1950 (4px wide)
+  * Empty space x=1908-1946 (38px ≈ 14pt) before slash
+  * Empty space x=1950-1988 (38px ≈ 14pt) after slash
+  * Confirms extra spacing
+
+- Super-zoom VLM analysis on slash: "THICK, 15-20% of height, looks like Times-Bold"
+
+- VLM full-page scan: "No issues"
+
+- Committed: 022c395 fix(pdf): revert kingdom size, bold slash with extra spaces, verify row2
+- Pushed to GitHub (origin/main)
+- Vercel auto-deployed
+- Generated PDF from https://almoqeesehh.vercel.app/api/generate-pdf
+- VLM verification on Vercel production:
+  * Header: "Kingdom of Saudi Arabia" present (image-based, restored size) ✓
+  * Row 2: order '1 يوم (date إلى date)', text centered, all 4 cells same level ✓
+  * ID row: spaces around slash, slash on baseline ✓
+
+Stage Summary:
+- All three user-requested adjustments applied and verified on production
+- Kingdom header restored to original size (180pt)
+- Slash is now Times-Bold (always) with 2 spaces on each side
+- Row 2 Arabic cell confirmed correct order and centering
+- Production deployment at https://almoqeesehh.vercel.app is live
