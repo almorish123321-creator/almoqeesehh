@@ -528,8 +528,8 @@ export async function generateSickLeavePDF(
   }
 
   if (fs.existsSync(headerLogoPath)) {
-    doc.image(headerLogoPath, (pageWidth - 240) / 2, 50, {
-      width: 240,
+    doc.image(headerLogoPath, (pageWidth - 340) / 2, 30, {
+      width: 340,
       align: "center",
     });
   } else {
@@ -841,15 +841,20 @@ export async function generateSickLeavePDF(
 
   // Arabic duration — rendered as a single mixed line via drawMixedText.
   //
-  // Target visual order (per user's latest request — match reference image):
-  //     "(date الى date) 1 يوم"
-  // i.e. DATES on the LEFT, "1 يوم" (number + day word) on the RIGHT.
-  // This is the natural Arabic RTL reading order: reader starts at the
-  // right (sees "1 يوم" first) then moves left (sees the dates).
+  // Target visual order (per user's reference screenshot + latest request):
+  //     Reading RTL:  "1 يوم (date الى date)"
+  //     Visual LTR:   "(date الى date) يوم 1"
   //
-  // We construct the line in visual LTR order (left to right) so that
-  // drawMixedText places the runs left-to-right with dates first, then
-  // the number, then "يوم" — visually: dates on left, "1 يوم" on right.
+  // Why this order: in Arabic RTL reading, the rightmost element is read
+  // first. drawMixedText places runs left-to-right in the order they
+  // appear in the string, so to make "1" the rightmost (read first) we
+  // put it LAST in the string. To make "يوم" the second-rightmost we
+  // put it second-to-last. Dates go first (leftmost).
+  //
+  // User explicitly requested: "اجعل الرقم قبل كلمه يوم وليس بعدها"
+  // (make the number BEFORE يوم, not after). In RTL reading "before"
+  // means comes first = rightmost visually. Previous attempt had
+  // "يوم 1" (يوم read first), now corrected to "1 يوم" (1 read first).
   //
   // Font: this cell uses Amiri (Amiri-Arabic for Arabic runs, Amiri-Latin
   // for digit/Latin runs) per user request — see useAmiri option below.
@@ -860,10 +865,11 @@ export async function generateSickLeavePDF(
   const hDateFrom = startDateFormatted || "-";
   const hDateTo = endDateFormatted || "-";
 
-  // Construct:  "(<hDateFrom> الى <hDateTo>) <durNum> <durTxt>"
-  // Visual LTR order: dates-paren, number, day-word
-  // Visual result: dates on LEFT, "1 يوم" on RIGHT (matches user image).
-  const arDurLine = `(${hDateFrom} الى ${hDateTo}) ${durNum} ${durTxt}`;
+  // Construct:  "(<hDateFrom> الى <hDateTo>) <durTxt> <durNum>"
+  // Visual LTR order: dates-paren, day-word, number
+  // Visual result (LTR): dates on LEFT, "يوم" in middle, "1" on RIGHT
+  // Reading RTL: "1 يوم (dates)" — number BEFORE يوم ✓
+  const arDurLine = `(${hDateFrom} الى ${hDateTo}) ${durTxt} ${durNum}`;
 
   // Compute the unified baseline Y for the cell.
   // Use Amiri line metrics here (since this cell uses Amiri) so vertical
