@@ -2310,3 +2310,84 @@ Stage Summary:
   with different line box heights (Arabic ~2.11×F vs Latin ~1.12×F) need
   Y-shifting to align visual baselines. The proper shift is
   (arabicLineH - latinLineH), measurable at runtime via heightOfString().
+
+---
+Task ID: PDF-FORMAT-MATCH-REFERENCE
+Agent: main
+Task: Match PDF output to user's reference screenshot — license tofu, يوم order, slash spacing, kingdom size
+
+Work Log:
+- User shared reference screenshot: /home/z/my-project/upload/Screenshot_٢٠٢٦-٠٧-٢٩-١٧-٤٤-٥٣-٦٥٣_com.mi.globalbrowser-edit.jpg
+- Analyzed reference with VLM (glm-5v-turbo):
+  * Header: "Kingdom of Saudi Arabia" is SMALL (smaller than main title)
+  * Row 2 Arabic cell order: "1 يوم (date الى date)" — NUMBER FIRST, then word, then parens with dates
+  * National ID row: spaces around slash — "الهوية / الإقامة"
+  * License number: digits visible as actual numbers, not boxes
+- Compared to my current output and found 4 issues to fix
+
+- Root cause analysis for license tofu:
+  * Ran scripts/test-license.cjs to test 3 rendering approaches
+  * VLM-confirmed: NotoArabic + rtla + English digits → tofu boxes
+  * VLM-confirmed: NotoArabic without rtla + English digits → tofu + disconnected Arabic
+  * VLM-confirmed: Split rendering (Arabic with NotoArabic, digits with Times) → digits visible, Arabic connected
+  * Conclusion: Noto Sans Arabic font lacks ASCII digit glyphs (0-9)
+
+- Implemented drawMixedText() helper in src/lib/pdf-generator.ts:
+  * Tokenizes input into Arabic runs and Latin/digit runs
+  * Splits on Arabic Unicode ranges: \u0600-\u06FF, \u0750-\u077F, \uFB50-\uFDFF, \uFE70-\uFEFF
+  * Spaces attached to whichever run they border
+  * Renders Arabic runs with NotoArabic + rtla feature
+  * Renders Latin/digit runs with Times-Roman/Times-Bold
+  * Computes Y offset = (arabicLineH - latinLineH) to align baselines
+  * Supports align: center/right/left with optional width
+  * Falls back to drawTextEn when useArabicFont is false
+  * Falls back to default drawTextAr path when text is all-Arabic (no mixed)
+
+- Applied drawMixedText to:
+  * License number rendering in hospital footer block:
+    `رقم الترخيص : 1410101201200443`
+    Was: drawTextAr(fullLine, ...) → digits as tofu
+    Now: drawMixedText(fullLine, ...) → digits render correctly with Times-Bold
+
+  * Arabic duration cell in Row 2:
+    Replaced 7-step piece-by-piece manual rendering with single drawMixedText call
+    Constructed line in visual LTR order: `${durNum} ${durTxt} (${hDateFrom} الى ${hDateTo})`
+    drawMixedText correctly splits into runs:
+      Latin: "1 " | Arabic: "يوم " | Latin: "(" + dateFrom + " " | Arabic: "الى" | Latin: " " + dateTo + ")"
+    Each Arabic run gets rtla for proper shaping; each Latin run gets Times
+
+- Updated slash handler in drawTextAr:
+  * Was: "/" rendered alone (no spaces, tight against words)
+  * Now: " / " rendered as a group (space + slash + space) with Times-Roman
+  * User reference shows: "الهوية / الإقامة" — spaces around slash
+  * VLM-verified: spaces visible before and after slash
+
+- Reduced kingdom header image size:
+  * Was: 180pt wide at y=70
+  * Now: 140pt wide at y=60 (more compact, matches reference)
+  * Fallback text fontSize: 16 → 11
+
+- Generated /tmp/full-test.pdf via npx tsx scripts/test-pdf-direct.ts
+- VLM verification on local PDF:
+  * Header: "Kingdom of Saudi Arabia" size similar to reference ✓
+  * Row 2 Arabic cell: order is "1 يوم (09-06-2026 الى 09-06-2026)" ✓
+    All elements on same baseline, vertically centered ✓
+  * ID row: spaces visible around slash, slash on same baseline ✓
+  * License: digits visible as "1410101201200443", no tofu ✓
+  * Full page scan: "No issues" ✓
+
+- Committed: 7bca736 fix(pdf): license tofu + يوم order + slash spacing + kingdom size
+- Pushed to GitHub (origin/main)
+- Vercel auto-deployed
+- Generated PDF from https://almoqeesehh.vercel.app/api/generate-pdf
+- VLM verification on Vercel production:
+  * Header: text size similar to reference ✓
+  * Row 2: order "1 يوم (date الى date)", same baseline ✓
+  * ID row: spaces around slash, slash on baseline ✓
+  * License: digits visible as actual numbers ✓
+
+Stage Summary:
+- All 4 user-reported issues resolved and verified on production
+- Key new helper: drawMixedText() — reusable function for any mixed Arabic + Latin/digit text rendering, properly handling font switching, baseline alignment, and visual order
+- Production deployment at https://almoqeesehh.vercel.app is live with all fixes
+- Reference screenshot matched: kingdom size smaller, يوم order number-first, slash with spaces, license digits visible
