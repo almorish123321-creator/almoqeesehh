@@ -528,8 +528,8 @@ export async function generateSickLeavePDF(
   }
 
   if (fs.existsSync(headerLogoPath)) {
-    doc.image(headerLogoPath, (pageWidth - 180) / 2, 70, {
-      width: 180,
+    doc.image(headerLogoPath, (pageWidth - 240) / 2, 50, {
+      width: 240,
       align: "center",
     });
   } else {
