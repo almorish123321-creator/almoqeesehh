@@ -769,8 +769,17 @@ export async function generateSickLeavePDF(
 
   const duration = `${patient.day_count || 0} day (${startDateFormatted} to ${endDateFormatted})`;
   const durText = getArabicDuration(patient.day_count);
-  // Format: Count Unit (FromDate الى ToDate)
-  const durationAr = `${durText} (${startDateFormatted} الى ${endDateFormatted})`;
+
+  // Arabic duration line — matches bot format exactly:
+  //   f"{duration_days} يوم  ( {admission_lrm} إلى {discharge_lrm} ) "
+  // The bot wraps each date with LRM marks (U+200E) to force the dates
+  // to stay LTR inside the RTL Arabic context, preventing BiDi from
+  // reversing the digit order. drawMixedText strips control chars before
+  // rendering, so LRM marks have no visual effect here — we keep the
+  // explicit format for parity with the bot source.
+  const LRM = "\u200E";
+  const durationAr =
+    `${patient.day_count || 1} يوم  ( ${LRM}${startDateFormatted}${LRM} إلى ${LRM}${endDateFormatted}${LRM} ) `;
 
   // --- Row 1: Leave ID ---
   drawRow("Leave ID", patient.gsl_code, "رمز الإجازة");
@@ -841,35 +850,33 @@ export async function generateSickLeavePDF(
 
   // Arabic duration — rendered as a single mixed line via drawMixedText.
   //
-  // Target visual order (per user's reference screenshot + latest request):
-  //     Reading RTL:  "1 يوم (date الى date)"
-  //     Visual LTR:   "(date الى date) يوم 1"
+  // Format matches the bot's calculate_duration() output exactly:
+  //     f"{duration_days} يوم  ( {admission_lrm} إلى {discharge_lrm} ) "
+  //     e.g. "1 يوم  ( 09-06-2026 إلى 09-06-2026 ) "
+  // (LRM marks stripped by drawMixedText — see durationAr construction above)
   //
-  // Why this order: in Arabic RTL reading, the rightmost element is read
-  // first. drawMixedText places runs left-to-right in the order they
-  // appear in the string, so to make "1" the rightmost (read first) we
-  // put it LAST in the string. To make "يوم" the second-rightmost we
-  // put it second-to-last. Dates go first (leftmost).
+  // Bot uses arabic_reshaper + python-bidi (safe_arabic_mixed) to convert
+  // this to visual order. Our drawMixedText splits on Arabic/Latin runs
+  // and lays them out left-to-right in string order, which for this
+  // specific string produces:
+  //     Visual LTR:   "1 يوم  ( <date> إلى <date> ) "
+  //     Reading RTL:  "<date> ) إلى <date> (  يوم 1"
+  // — i.e. number on LEFT visually (read last in RTL), dates on RIGHT
+  //   (read first in RTL). This is the visual order the bot produces too:
+  //   arabic_reshaper + bidi reverses the entire string.
   //
-  // User explicitly requested: "اجعل الرقم قبل كلمه يوم وليس بعدها"
-  // (make the number BEFORE يوم, not after). In RTL reading "before"
-  // means comes first = rightmost visually. Previous attempt had
-  // "يوم 1" (يوم read first), now corrected to "1 يوم" (1 read first).
+  // Per user request: "اجعل الرقم قبل كلمه يوم وليس بعدها" — the number
+  // must appear BEFORE يوم in Arabic reading order. In RTL that means
+  // the number is to the RIGHT of يوم. Our drawMixedText places runs in
+  // string order from LEFT to RIGHT, so we put يوم FIRST and the number
+  // LAST in the string. Visual result:
+  //     Visual LTR:   "<dates> ) إلى <dates> (  يوم 1"
+  //     Reading RTL:  "1 يوم  ( <dates> إلى <dates> )"
+  // — number read FIRST (rightmost) ✓, يوم read SECOND ✓
   //
   // Font: this cell uses Amiri (Amiri-Arabic for Arabic runs, Amiri-Latin
   // for digit/Latin runs) per user request — see useAmiri option below.
   // All other cells in the PDF keep using Noto Sans Arabic.
-  const durNum = (durText.match(/\d+/) || ["0"])[0];
-  const durTxt = durText.replace(/[0-9]/g, "").trim();
-
-  const hDateFrom = startDateFormatted || "-";
-  const hDateTo = endDateFormatted || "-";
-
-  // Construct:  "(<hDateFrom> الى <hDateTo>) <durTxt> <durNum>"
-  // Visual LTR order: dates-paren, day-word, number
-  // Visual result (LTR): dates on LEFT, "يوم" in middle, "1" on RIGHT
-  // Reading RTL: "1 يوم (dates)" — number BEFORE يوم ✓
-  const arDurLine = `(${hDateFrom} الى ${hDateTo}) ${durTxt} ${durNum}`;
 
   // Compute the unified baseline Y for the cell.
   // Use Amiri line metrics here (since this cell uses Amiri) so vertical
@@ -889,7 +896,7 @@ export async function generateSickLeavePDF(
   const maxLineH = Math.max(arabicLineH, englishLineH);
   const yCell = currentY + (rowH - maxLineH) / 2;
 
-  drawMixedText(arDurLine, startX + col1W + subColW + 10, yCell, {
+  drawMixedText(durationAr, startX + col1W + subColW + 10, yCell, {
     width: subColW - 20,
     align: "center",
     fontSize: durFontSize - 1,
@@ -918,10 +925,12 @@ export async function generateSickLeavePDF(
   const issueDateStr = formatDateOnly(issueDateRaw as string | Date);
   drawRow("Issue Date", issueDateStr, "تاريخ إصدار التقرير");
 
-  // Name
+  // Name — bot applies .upper() to patient_name_en (matches Python:
+  //   processed_data.get('patient_name_en', '').upper())
+  // Only the English value is uppercased; Arabic value is unchanged.
   drawRow(
     "Name",
-    { en: patient.name_en, ar: patient.name_ar || "" },
+    { en: (patient.name_en || "").toUpperCase(), ar: patient.name_ar || "" },
     "الاسم",
     true,
     "#f7f7f7",
@@ -970,9 +979,11 @@ export async function generateSickLeavePDF(
     "#f7f7f7",
   );
 
+  // Practitioner Name — bot applies .upper() to doctor_name_en (matches Python:
+  //   processed_data.get("doctor_name_en", "").upper())
   drawRow(
     "Practitioner Name",
-    { en: patient.doctor_name_en, ar: patient.doctor_name_ar },
+    { en: (patient.doctor_name_en || "").toUpperCase(), ar: patient.doctor_name_ar },
     "اسم الممارس",
     true,
     "#f7f7f7",
@@ -1097,13 +1108,18 @@ export async function generateSickLeavePDF(
       // Times-Bold on the same baseline as the Arabic. drawMixedText
       // handles the Arabic/Latin run splitting + baseline offset.
       //
-      // Visual order target (per user request — digits on LEFT, label on RIGHT):
+      // Bot format (matches Python source):
+      //     full_line = f"رقم الترخيص : {license_value}"
+      //     processed_line = self.safe_arabic_mixed(full_line)
+      // In RTL reading order: "رقم الترخيص : <number>" — Arabic label
+      // first (rightmost), then colon, then digits (leftmost).
+      //
+      // Our drawMixedText lays out runs in string order from LEFT to
+      // RIGHT, so to match the bot's RTL output we put the digits FIRST
+      // in the string and the Arabic label LAST. Final visual result:
       //     Visual LTR:  "<licNum> : رقم الترخيص"
       //     Reading RTL: "رقم الترخيص : <licNum>"
-      // Place digits first in the string so they end up on the LEFT side
-      // visually; "رقم الترخيص" goes last so it ends up on the RIGHT side
-      // (read first in RTL — matches Arabic reading order).
-      const fullLine = `${licNum} : رقم الترخيص`;
+      const fullLine = `رقم الترخيص : ${licNum}`;
 
       drawMixedText(fullLine, rightCenterX - 125, footerY + 165, {
         width: 250,
