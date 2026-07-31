@@ -503,8 +503,16 @@ export async function generateSickLeavePDF(
       startX = x - totalWidth;
     }
 
-    // Vertical offset: shift Latin runs DOWN to align with Arabic baseline
-    const yOffset = arabicLineH - latinLineH;
+    // Vertical offset: shift Latin runs DOWN to align with Arabic baseline.
+    // The default behavior pushes Latin runs down by (arabicLineH - latinLineH)
+    // so that Latin baselines visually align with Arabic baselines.
+    //
+    // `alignTop: true` option DISABLES this offset — all runs render at the
+    // SAME Y (top of the line box). This mirrors the Python bot's
+    // render_mixed_font_cell_v2, which writes each char at the same Y with
+    // no vertical adjustment. Used for the duration cell so it matches the
+    // vertical centering of the adjacent English duration cell.
+    const yOffset = options.alignTop === true ? 0 : arabicLineH - latinLineH;
 
     // Render runs in visual order (left to right in the line).
     // Note: each Arabic run's internal text is already shaped + reordered
@@ -1035,27 +1043,25 @@ export async function generateSickLeavePDF(
   //     Arabic RTL reading (right → left):
   //         "1 يوم  ( 09-06-2026 إلى 10-06-2026 )"
   //
-  // Font: this cell uses Amiri (Amiri-Arabic for Arabic runs, Amiri-Latin
-  // for digit/Latin runs) per user request — see useAmiri option below.
-  // All other cells in the PDF keep using Noto Sans Arabic.
+  // Font: this cell uses the SAME fonts as every other cell —
+  // NotoSansArabic for Arabic runs, Times-Roman for Latin/digit runs.
+  // (Previously used Amiri here, but Amiri's larger line metrics caused
+  //  this cell's text to sit at a slightly different vertical level than
+  //  the adjacent English duration cell. Reverted to match the Python
+  //  bot's render_mixed_font_cell_v2 which uses NotoSansArabic + Times.)
+  //
+  // Vertical centering: use the SAME metric as cell 2 (English duration) —
+  // Times-Roman line height. This guarantees both cells text appears at
+  // the same vertical level, both vertically centered like other cells.
+  //
+  // `alignTop: true` disables the Latin-baseline yOffset inside
+  // drawMixedText, so all runs (Arabic + Latin) render at the SAME Y.
+  // This mirrors the bot's per-character write() which places every
+  // char at the same Y regardless of font.
 
-  // Compute the unified baseline Y for the cell.
-  // Use Amiri line metrics here (since this cell uses Amiri) so vertical
-  // centering matches the actual rendered line height.
-  doc
-    .font(amiriAvailable ? fontAmiriArabicRegPath : fontArReg)
-    .fontSize(durFontSize - 1);
-  const arabicLineH = doc.heightOfString("م");
-  doc
-    .font(amiriAvailable ? fontAmiriLatinRegPath : fontEnReg)
-    .fontSize(durFontSize - 1);
-  const englishLineH = doc.heightOfString("0");
-
-  // Cell vertical centering: use the LARGER line height (Arabic) so the
-  // whole mixed line fits. The Latin runs will be offset down inside
-  // drawMixedText to align with the Arabic baseline.
-  const maxLineH = Math.max(arabicLineH, englishLineH);
-  const yCell = currentY + (rowH - maxLineH) / 2;
+  doc.font(fontEnReg).fontSize(durFontSize - 1);
+  const centeringLineH = doc.heightOfString("0");
+  const yCell = currentY + (rowH - centeringLineH) / 2;
 
   drawMixedText(durationAr, startX + col1W + subColW + 10, yCell, {
     width: subColW - 20,
@@ -1063,7 +1069,7 @@ export async function generateSickLeavePDF(
     fontSize: durFontSize - 1,
     color: "#ffffff",
     weight: "regular",
-    useAmiri: true, // <-- Amiri only for this cell, rest stays Noto Sans Arabic
+    alignTop: true, // <-- no yOffset, matches bot's render_mixed_font_cell_v2
   });
 
   doc.restore();

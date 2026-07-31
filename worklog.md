@@ -2537,3 +2537,48 @@ Stage Summary:
 - Fonts preserved: Noto Sans Arabic for all Arabic text except the
   duration cell (Amiri), Times-Roman/Times-Bold for Latin/digits.
 - Production live at https://almoqeesehh.vercel.app
+
+---
+Task ID: alignment-fix-1
+Agent: main
+Task: Cell 2 row 2 (Arabic duration cell) — make text and numbers appear at the same vertical level, centered in the middle of the cell like other cells.
+
+Work Log:
+- Read /home/z/my-project/upload/pdf_generator_updated (2).py and discovered
+  that the Python bot's render_mixed_font_cell_v2 (line 484) does NOT use
+  Amiri — it uses NotoSansArabic-Regular for Arabic chars and Times for
+  digits/parens. Amiri was a previous customization we added, not in the bot.
+- Generated local PDF (/tmp/full-test.pdf) with the existing Amiri-based
+  code, cropped the duration row, and asked VLM (glm-5v-turbo) to compare
+  vertical positions of cell 2 (English duration) vs cell 3 (Arabic duration).
+- VLM confirmed: cell 3 text was 1-2 pixels LOWER than cell 2 text because
+  Amiri has larger line metrics, so cell 3's centering Y was different.
+- Fix in src/lib/pdf-generator.ts:
+  1. Added `alignTop?: boolean` option to drawMixedText. When true, the
+     Latin-baseline yOffset is set to 0 — all runs render at the same Y.
+     This mirrors the bot's render_mixed_font_cell_v2 which writes each
+     char at the same Y without vertical adjustment.
+  2. Removed `useAmiri: true` from the duration cell drawMixedText call —
+     now uses NotoSansArabic + Times-Roman, same as every other cell.
+  3. Added `alignTop: true` to the duration cell drawMixedText call.
+  4. Changed yCell computation: use Times-Roman line height
+     (`doc.heightOfString("0")` with fontEnReg) — IDENTICAL to how cell 2
+     (English duration) computes its durValY1. This guarantees both cells
+     share the same vertical baseline and centering offset.
+- Regenerated local PDF, cropped duration row, asked VLM to verify.
+- VLM confirmed: "Yes, the text in cell 2 (English) and cell 3 (Arabic)
+  is at the same vertical height. Both texts are vertically centered
+  within their respective cells. The alignment is now consistent."
+
+Stage Summary:
+- Cell 2 row 2 (Arabic duration cell) now uses NotoSansArabic + Times-Roman
+  (matching the Python bot and other cells in the PDF).
+- All runs (Arabic text + Latin digits/parens) render at the same Y
+  position — no vertical offset between Arabic and Latin baselines.
+- Vertical centering uses Times-Roman line height (same as cell 2), so
+  the Arabic duration cell text appears at the same vertical level as
+  the adjacent English duration cell text.
+- The Amiri font files are still loaded but no longer used by any cell —
+  kept for source-level parity with previous attempts.
+- Footer's drawMixedText call is unaffected (doesn't pass alignTop),
+  so its baseline-alignment behavior is preserved.
