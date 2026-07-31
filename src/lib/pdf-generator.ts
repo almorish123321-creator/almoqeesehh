@@ -543,23 +543,35 @@ export async function generateSickLeavePDF(
   //
   // Used ONLY for uppercase English name cells (Name + Practitioner Name).
   //
-  // Behavior:
-  //   1. Measure the actual text width with the value font (no wrapping).
-  //   2. If text fits within availableWidth → render on ONE line, centered
-  //      horizontally and vertically. Row height stays at the single-line
-  //      minimum.
-  //   3. If text does NOT fit → split at word boundaries, putting as many
-  //      words as possible on line 1 (majority on top) and the rest on
-  //      line 2. Render each line centered. No mid-word hyphen breaks.
-  //   4. If no good word-boundary split exists → render as a single line
-  //      anyway (let it overflow rather than break mid-word).
+  // Bot behavior (render_long_name_cell, lines 413-482):
+  //   1. Measure text width; padding = 4mm each side → available_width.
+  //   2. If text fits → single line, centered horizontally AND vertically
+  //      via FPDF's cell(width, height, text, align='C') which vertically
+  //      centers the text within the cell height.
+  //   3. If text doesn't fit → split at word boundaries, putting as many
+  //      words as possible on line 1 (majority on top).
+  //   4. For 2-line case:
+  //        line_height = height / 2  (each line gets HALF the row height)
+  //        y_offset = y + (height - line_height*2) / 2 = y  (no extra offset)
+  //        Line 1: cell(width, line_height, line1, align='C') at y_offset
+  //                → text vertically centered within TOP HALF [y, y+h/2]
+  //        Line 2: cell(width, line_height, line2, align='C') at y_offset+line_height
+  //                → text vertically centered within BOTTOM HALF [y+h/2, y+h]
+  //   5. If no good word-boundary split → render as single line (overflow).
   //
-  // This fixes two issues with PDFKit's default `heightOfString` + `text()`
-  // behavior:
-  //   - PDFKit breaks mid-word with a hyphen (e.g. "AL-QAHTANI" → "AL-" +
-  //     "QAHTANI"), which the user explicitly rejected.
-  //   - PDFKit's automatic wrapping doesn't favor putting the majority of
-  //     words on the first line.
+  // Our port:
+  //   - Same greedy max-words-on-line-1 word splitting.
+  //   - Same single-line vertical centering.
+  //   - For 2-line case: each line is centered WITHIN ITS HALF of the row,
+  //     matching the bot's per-half centering. Previously we drew line 1
+  //     at the TOP of the cell and line 2 at the MIDDLE — which left empty
+  //     space at the bottom of each half. Now we compute:
+  //       line1Y = cellY + (lineH - naturalLineH) / 2
+  //       line2Y = cellY + lineH + (lineH - naturalLineH) / 2
+  //     so each line is vertically centered in its respective half.
+  //   - No mid-word hyphenation (bot has it as a last-resort fallback for
+  //     very long single-word names; we skip it since our cell is narrower
+  //     and wrapping at word boundaries is sufficient).
   // ============================================================
   const renderLongNameCell = (
     text: string,
@@ -571,15 +583,15 @@ export async function generateSickLeavePDF(
   ) => {
     if (!text) return;
 
-    const fontSize = options.fontSize || 14;
+    const fontSize = options.fontSize || 13;
     const color = options.color || "#000000";
     const weight = options.weight || "regular";
     const fontToUse = weight === "bold" ? fontEnBold : fontEnReg;
     // The caller already passes cellW = subColW - 30, which bakes in 15pt
-    // of padding on each side of the sub-column. We DON'T add extra
-    // padding here — adding more would push borderline-length names
-    // (e.g. "NABIL HANNA NASR HANNA" at 189.7pt) past the wrap threshold
-    // even though they fit comfortably within the actual sub-column.
+    // of padding on each side of the sub-column. We DON'T add the bot's
+    // extra 4mm padding here — our cell is already ~15pt narrower than
+    // the bot's per-side, and adding more padding would push borderline
+    // names past the wrap threshold unnecessarily.
     const padding = 0;
     const availableWidth = cellW - padding * 2;
 
@@ -629,17 +641,22 @@ export async function generateSickLeavePDF(
       return;
     }
 
-    // Case 4: render 2 lines, each centered, vertically centered in the row
+    // Case 4: render 2 lines — each line centered WITHIN ITS HALF of the row.
+    // Matches bot's render_long_name_cell:
+    //   line_height = height / 2
+    //   Line 1 cell: [y, y + h/2] → text at y + (h/2 - naturalH) / 2
+    //   Line 2 cell: [y + h/2, y + h] → text at y + h/2 + (h/2 - naturalH) / 2
     const lineH = cellH / 2;
-    const yOffset = cellY; // top of cell; lineH takes half each
+    const line1Y = cellY + (lineH - singleLineH) / 2;
+    const line2Y = cellY + lineH + (lineH - singleLineH) / 2;
 
     doc.font(fontToUse).fontSize(fontSize).fillColor(color);
-    doc.text(line1, cellX, yOffset, {
+    doc.text(line1, cellX, line1Y, {
       width: cellW,
       align: "center",
       lineBreak: false,
     });
-    doc.text(line2, cellX, yOffset + lineH, {
+    doc.text(line2, cellX, line2Y, {
       width: cellW,
       align: "center",
       lineBreak: false,
@@ -742,7 +759,10 @@ export async function generateSickLeavePDF(
       if (uppercaseEn) {
         // Uppercase names: use text width to decide 1 vs 2 lines,
         // avoiding PDFKit's mid-word hyphen wrapping in heightOfString.
-        doc.font(fontEnReg).fontSize(valueFontSize);
+        // Bot uses size=13 for these cells (set_cell_font_and_color
+        // line 543); we measure with 13 to match the actual render size.
+        const uppercaseFontSize = 13;
+        doc.font(fontEnReg).fontSize(uppercaseFontSize);
         const textW = doc.widthOfString(value.en || "-");
         const availW = subColW - 30;
         const singleH = doc.heightOfString("X", { width: subColW });
@@ -825,6 +845,9 @@ export async function generateSickLeavePDF(
       if (uppercaseEn) {
         // Use renderLongNameCell: prevents mid-word hyphen breaks and
         // puts majority of words on line 1 when wrapping is needed.
+        // Bot's set_cell_font_and_color uses size=13 for rows 5, 9
+        // (Name, Practitioner Name) — we pass 13 here to match, instead
+        // of the default valueFontSize (14) used for other value cells.
         renderLongNameCell(
           value.en || "-",
           startX + col1W + 15,
@@ -834,7 +857,7 @@ export async function generateSickLeavePDF(
           {
             align: "center",
             weight: "regular",
-            fontSize: valueFontSize,
+            fontSize: 13,
             color: "#29396e",
           },
         );
@@ -1020,14 +1043,18 @@ export async function generateSickLeavePDF(
     .stroke();
 
   // Values — English duration (left sub-col)
-  doc.font(fontEnReg).fontSize(durFontSize - 1);
+  // Bot uses size=13 for ALL cells in row 2 (labels AND values, English AND
+  // Arabic) — see set_cell_font_and_color line 533 and render_mixed_font_cell_v2
+  // line 502/504. We previously used durFontSize-1 (=12) for values, which
+  // made the duration values smaller than the labels. Now matching bot: 13.
+  doc.font(fontEnReg).fontSize(durFontSize);
   const durValH1 = doc.heightOfString(duration, { width: subColW - 20 });
   const durValY1 = currentY + (rowH - durValH1) / 2;
 
   drawTextEn(duration, startX + col1W + 10, durValY1, {
     width: subColW - 20,
     align: "center",
-    fontSize: durFontSize - 1,
+    fontSize: durFontSize,
     color: "#ffffff",
     weight: "regular",
   });
@@ -1059,14 +1086,14 @@ export async function generateSickLeavePDF(
   // This mirrors the bot's per-character write() which places every
   // char at the same Y regardless of font.
 
-  doc.font(fontEnReg).fontSize(durFontSize - 1);
+  doc.font(fontEnReg).fontSize(durFontSize);
   const centeringLineH = doc.heightOfString("0");
   const yCell = currentY + (rowH - centeringLineH) / 2;
 
   drawMixedText(durationAr, startX + col1W + subColW + 10, yCell, {
     width: subColW - 20,
     align: "center",
-    fontSize: durFontSize - 1,
+    fontSize: durFontSize,
     color: "#ffffff",
     weight: "regular",
     alignTop: true, // <-- no yOffset, matches bot's render_mixed_font_cell_v2

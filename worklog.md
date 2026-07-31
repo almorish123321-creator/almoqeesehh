@@ -2582,3 +2582,79 @@ Stage Summary:
   kept for source-level parity with previous attempts.
 - Footer's drawMixedText call is unaffected (doesn't pass alignTop),
   so its baseline-alignment behavior is preserved.
+
+---
+Task ID: bot-parity-2
+Agent: main
+Task: Review Python bot code (pdf_generator_updated (2).py) and use it as reference for cell 2 (Arabic duration cell) and uppercase letter cells (Name + Practitioner Name).
+
+Work Log:
+- Read /home/z/my-project/upload/pdf_generator_updated (2).py thoroughly.
+- Compared bot's render_mixed_font_cell_v2 (line 484) with our cell 2 impl.
+- Compared bot's render_long_name_cell (line 413) with our renderLongNameCell.
+
+Discrepancies found and fixed:
+
+1. Cell 2 (Arabic duration cell) — font size:
+   - Bot's render_mixed_font_cell_v2 uses size=13 (line 502, 504).
+   - Bot's set_cell_font_and_color uses size=13 for ALL cells in row 2
+     (labels AND values, English AND Arabic) — line 526, 528, 533, 536.
+   - Our code used `durFontSize - 1` (=12) for the duration VALUES while
+     using `durFontSize` (=13) for the duration LABELS. This made the
+     values appear smaller than the labels.
+   - FIX: Changed both English and Arabic duration values from
+     `durFontSize - 1` to `durFontSize` (=13). Now all 4 cells in row 2
+     use the same 13pt font size, matching the bot exactly.
+
+2. Uppercase cells (Name + Practitioner Name) — font size:
+   - Bot's set_cell_font_and_color uses size=13 for rows 5, 9 (Name,
+     Practitioner Name) — line 543, 549.
+   - Our drawRow passed `valueFontSize` (=14) to renderLongNameCell.
+   - FIX: Changed renderLongNameCell call to pass `fontSize: 13` instead
+     of `fontSize: valueFontSize`. Also updated the height measurement
+     in drawRow to use `uppercaseFontSize = 13` so the row height
+     calculation matches the actual render size.
+
+3. Uppercase cells — 2-line vertical centering:
+   - Bot's render_long_name_cell (line 467-482):
+       line_height = height / 2
+       y_offset = y + (height - line_height*2) / 2 = y  (no extra offset)
+       Line 1: cell(width, line_height, line1, align='C') at y_offset
+               → FPDF cell() vertically centers text within [y, y+h/2]
+       Line 2: cell(width, line_height, line2, align='C') at y_offset+line_height
+               → FPDF cell() vertically centers text within [y+h/2, y+h]
+     So each line is vertically centered WITHIN ITS HALF of the row.
+   - Our code drew line 1 at `yOffset = cellY` (TOP of cell, not centered
+     in top half) and line 2 at `yOffset + lineH` (TOP of bottom half,
+     not centered). This left empty space at the bottom of each half.
+   - FIX: Changed to:
+       line1Y = cellY + (lineH - singleLineH) / 2
+       line2Y = cellY + lineH + (lineH - singleLineH) / 2
+     Now each line is centered within its respective half, matching the
+     bot's per-half centering behavior.
+
+Verification (local):
+- Generated /tmp/full-test.pdf with test data.
+- VLM (glm-5v-turbo) verified duration row:
+  "Yes, the font size for the duration values is identical to the labels.
+   All text is vertically centered."
+- VLM verified Name row (short name "NABIL HANNA NASR HANNA"):
+  Single line, vertically centered. ✓
+- VLM verified Practitioner Name row with long name
+  ("NABIL HANNA NASR HANNA ELIAS GEORGE MICHAEL"):
+  Two lines, each centered within its half. ✓
+  "Line 1 occupies the upper portion and Line 2 occupies the lower portion,
+   with substantial padding around them, consistent with a centering or
+   vertical distribution alignment within the cell's halves."
+
+Stage Summary:
+- Cell 2 (Arabic duration cell) now uses font size 13 (was 12), matching
+  the bot's render_mixed_font_cell_v2 and set_cell_font_and_color.
+- Uppercase cells (Name + Practitioner Name) now use font size 13 (was 14),
+  matching the bot's set_cell_font_and_color for rows 5, 9.
+- 2-line uppercase names now have each line centered within its half of
+  the row, matching the bot's render_long_name_cell per-half centering.
+  Previously line 1 was at the top and line 2 was at the middle, leaving
+  empty space at the bottom of each half.
+- Short uppercase names still render on a single line (no unnecessary wrap).
+- Long uppercase names still put the majority of words on line 1.
