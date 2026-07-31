@@ -402,6 +402,17 @@ export async function generateSickLeavePDF(
       return;
     }
 
+    // Strip Unicode Cf (Format) characters — LRM (U+200E), RLM (U+200F),
+    // ZWJ (U+200D), ZWNJ (U+200C), etc. These are BiDi control marks that
+    // are needed by the BiDi algorithm but are NOT visually rendered.
+    // PDFKit + Latin fonts (Times-Roman, Amiri-Latin) lack glyphs for
+    // these codepoints → they render as tofu □ boxes. Mirrors the bot's
+    // `clean_text = ''.join(ch for ch in text if unicodedata.category(ch) != 'Cf')`.
+    // eslint-disable-next-line no-control-regex
+    const CF_REGEX = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g;
+    const cleanedText = String(text).replace(CF_REGEX, "");
+    text = cleanedText;
+
     const fontSize = options.fontSize || 12;
     const color = options.color || "#000000";
     const weight = options.weight || "regular";
@@ -520,6 +531,114 @@ export async function generateSickLeavePDF(
   };
 
   // ============================================================
+  // renderLongNameCell — port of the bot's render_long_name_cell.
+  //
+  // Used ONLY for uppercase English name cells (Name + Practitioner Name).
+  //
+  // Behavior:
+  //   1. Measure the actual text width with the value font (no wrapping).
+  //   2. If text fits within availableWidth → render on ONE line, centered
+  //      horizontally and vertically. Row height stays at the single-line
+  //      minimum.
+  //   3. If text does NOT fit → split at word boundaries, putting as many
+  //      words as possible on line 1 (majority on top) and the rest on
+  //      line 2. Render each line centered. No mid-word hyphen breaks.
+  //   4. If no good word-boundary split exists → render as a single line
+  //      anyway (let it overflow rather than break mid-word).
+  //
+  // This fixes two issues with PDFKit's default `heightOfString` + `text()`
+  // behavior:
+  //   - PDFKit breaks mid-word with a hyphen (e.g. "AL-QAHTANI" → "AL-" +
+  //     "QAHTANI"), which the user explicitly rejected.
+  //   - PDFKit's automatic wrapping doesn't favor putting the majority of
+  //     words on the first line.
+  // ============================================================
+  const renderLongNameCell = (
+    text: string,
+    cellX: number,
+    cellY: number,
+    cellW: number,
+    cellH: number,
+    options: DrawOpts = {},
+  ) => {
+    if (!text) return;
+
+    const fontSize = options.fontSize || 14;
+    const color = options.color || "#000000";
+    const weight = options.weight || "regular";
+    const fontToUse = weight === "bold" ? fontEnBold : fontEnReg;
+    // The caller already passes cellW = subColW - 30, which bakes in 15pt
+    // of padding on each side of the sub-column. We DON'T add extra
+    // padding here — adding more would push borderline-length names
+    // (e.g. "NABIL HANNA NASR HANNA" at 189.7pt) past the wrap threshold
+    // even though they fit comfortably within the actual sub-column.
+    const padding = 0;
+    const availableWidth = cellW - padding * 2;
+
+    // Measure single-line text width and height
+    doc.font(fontToUse).fontSize(fontSize).fillColor(color);
+    const textWidth = doc.widthOfString(text);
+    const singleLineH = doc.heightOfString("X", { width: cellW });
+
+    // Case 1: text fits on a single line → render centered, no wrap
+    if (textWidth <= availableWidth) {
+      const vy = cellY + (cellH - singleLineH) / 2;
+      doc.font(fontToUse).fontSize(fontSize).fillColor(color);
+      doc.text(text, cellX, vy, {
+        width: cellW,
+        align: "center",
+        lineBreak: false,
+      });
+      return;
+    }
+
+    // Case 2: text too long → find the largest prefix of words that fits
+    const words = text.split(" ");
+    let line1 = "";
+    let line2 = "";
+    let foundSplit = false;
+
+    // Iterate from the largest prefix down to 1 word
+    for (let i = words.length; i > 0; i--) {
+      const testLine = words.slice(0, i).join(" ");
+      if (doc.widthOfString(testLine) <= availableWidth) {
+        line1 = testLine;
+        line2 = words.slice(i).join(" ");
+        foundSplit = true;
+        break;
+      }
+    }
+
+    // Case 3: no good split → render as single line (force, no wrap)
+    if (!foundSplit || !line2) {
+      const vy = cellY + (cellH - singleLineH) / 2;
+      doc.font(fontToUse).fontSize(fontSize).fillColor(color);
+      doc.text(text, cellX, vy, {
+        width: cellW,
+        align: "center",
+        lineBreak: false,
+      });
+      return;
+    }
+
+    // Case 4: render 2 lines, each centered, vertically centered in the row
+    const lineH = cellH / 2;
+    const yOffset = cellY; // top of cell; lineH takes half each
+
+    doc.font(fontToUse).fontSize(fontSize).fillColor(color);
+    doc.text(line1, cellX, yOffset, {
+      width: cellW,
+      align: "center",
+      lineBreak: false,
+    });
+    doc.text(line2, cellX, yOffset + lineH, {
+      width: cellW,
+      align: "center",
+      lineBreak: false,
+    });
+  };
+
+  // ============================================================
   // HEADER — identical to original
   // ============================================================
 
@@ -583,7 +702,14 @@ export async function generateSickLeavePDF(
 
   let currentY = startY;
 
-  // drawRow — faithful port including the `isDoubleValue` branch
+  // drawRow — faithful port including the `isDoubleValue` branch.
+  //
+  // Options:
+  //   - uppercaseEn: when true, the English value is rendered via
+  //     renderLongNameCell — which avoids PDFKit's mid-word hyphen
+  //     wrapping (e.g. "AL-QAHTANI" → "AL-" + "QAHTANI") and puts the
+  //     majority of words on line 1 when wrapping is unavoidable.
+  //     Used only for Name + Practitioner Name rows.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const drawRow = (
     labelEn: string,
@@ -591,9 +717,11 @@ export async function generateSickLeavePDF(
     labelAr: string,
     isDoubleValue = false,
     bgColor: string | null = null,
+    options: { uppercaseEn?: boolean } = {},
   ) => {
     const labelFontSize = 14;
     const valueFontSize = 14;
+    const uppercaseEn = options.uppercaseEn === true;
 
     doc.font(fontEnReg).fontSize(valueFontSize);
     let maxTextHeight = 0;
@@ -602,7 +730,18 @@ export async function generateSickLeavePDF(
     // Measure English Value
     if (isDoubleValue && typeof value === "object") {
       const subColW = col2W / 2;
-      const h1 = doc.heightOfString(value.en || "-", { width: subColW - 20 });
+      let h1: number;
+      if (uppercaseEn) {
+        // Uppercase names: use text width to decide 1 vs 2 lines,
+        // avoiding PDFKit's mid-word hyphen wrapping in heightOfString.
+        doc.font(fontEnReg).fontSize(valueFontSize);
+        const textW = doc.widthOfString(value.en || "-");
+        const availW = subColW - 30;
+        const singleH = doc.heightOfString("X", { width: subColW });
+        h1 = textW <= availW ? singleH : singleH * 2;
+      } else {
+        h1 = doc.heightOfString(value.en || "-", { width: subColW - 20 });
+      }
 
       doc.font(fontArReg);
       const h2 = doc.heightOfString(value.ar || "-", { width: subColW - 20 });
@@ -675,16 +814,34 @@ export async function generateSickLeavePDF(
         .stroke();
 
       // English value (left side)
-      doc.font(fontEnReg).fontSize(valueFontSize);
-      const vH1 = doc.heightOfString(value.en || "-", { width: subColW - 30 });
-      const vy1 = currentY + (dynamicRowH - vH1) / 2;
-      drawTextEn(value.en || "-", startX + col1W + 15, vy1, {
-        width: subColW - 30,
-        align: "center",
-        weight: "regular",
-        fontSize: valueFontSize,
-        color: "#29396e",
-      });
+      if (uppercaseEn) {
+        // Use renderLongNameCell: prevents mid-word hyphen breaks and
+        // puts majority of words on line 1 when wrapping is needed.
+        renderLongNameCell(
+          value.en || "-",
+          startX + col1W + 15,
+          currentY,
+          subColW - 30,
+          dynamicRowH,
+          {
+            align: "center",
+            weight: "regular",
+            fontSize: valueFontSize,
+            color: "#29396e",
+          },
+        );
+      } else {
+        doc.font(fontEnReg).fontSize(valueFontSize);
+        const vH1 = doc.heightOfString(value.en || "-", { width: subColW - 30 });
+        const vy1 = currentY + (dynamicRowH - vH1) / 2;
+        drawTextEn(value.en || "-", startX + col1W + 15, vy1, {
+          width: subColW - 30,
+          align: "center",
+          weight: "regular",
+          fontSize: valueFontSize,
+          color: "#29396e",
+        });
+      }
 
       // Arabic value (right side)
       const arText: string = value.ar || "-";
@@ -770,16 +927,35 @@ export async function generateSickLeavePDF(
   const duration = `${patient.day_count || 0} day (${startDateFormatted} to ${endDateFormatted})`;
   const durText = getArabicDuration(patient.day_count);
 
-  // Arabic duration line — matches bot format exactly:
-  //   f"{duration_days} يوم  ( {admission_lrm} إلى {discharge_lrm} ) "
-  // The bot wraps each date with LRM marks (U+200E) to force the dates
-  // to stay LTR inside the RTL Arabic context, preventing BiDi from
-  // reversing the digit order. drawMixedText strips control chars before
-  // rendering, so LRM marks have no visual effect here — we keep the
-  // explicit format for parity with the bot source.
-  const LRM = "\u200E";
+  // Arabic duration line — visual LTR order matching the bot's BiDi output.
+  //
+  // Bot source constructs: f"{days} يوم  ( {admission} إلى {discharge} ) "
+  // then applies `safe_arabic_mixed` (arabic_reshaper + python-bidi) which
+  // reverses the visual run order for RTL display. Final bot visual LTR:
+  //     ") <discharge> إلى <admission> (  يوم <days> "
+  //
+  // Our drawMixedText does NOT apply BiDi — it lays runs out left-to-right
+  // in string order. So to match the bot's visual output we manually
+  // construct the string in the bot's post-BiDi visual LTR order:
+  //     String:    ") <endDate> إلى <startDate> (  يوم <days> "
+  //     Visual LTR (what you see on screen, left → right):
+  //                ") 10-06-2026 إلى 09-06-2026 (  يوم 1"
+  //     Arabic RTL reading (right → left):
+  //                "1 يوم  ( 09-06-2026 إلى 10-06-2026 )"
+  // — number read FIRST (rightmost) ✓
+  // — يوم read SECOND ✓
+  // — "(" read as opening (visually on the right of paren content) ✓
+  // — startDate (admission) read before "إلى" ✓
+  // — endDate (discharge) read after "إلى" ✓
+  // — ")" read as closing (visually on the left of paren content) ✓
+  //
+  // LRM marks (U+200E) are NOT included because:
+  //   1. They're only needed by the BiDi algorithm, which we don't run.
+  //   2. Amiri-Latin (used for Latin runs in this cell) lacks the U+200E
+  //      glyph → renders as tofu □ boxes before each date.
+  // (See drawMixedText's Cf-stripping for the defensive version.)
   const durationAr =
-    `${patient.day_count || 1} يوم  ( ${LRM}${startDateFormatted}${LRM} إلى ${LRM}${endDateFormatted}${LRM} ) `;
+    `) ${endDateFormatted} إلى ${startDateFormatted} (  يوم ${patient.day_count || 1} `;
 
   // --- Row 1: Leave ID ---
   drawRow("Leave ID", patient.gsl_code, "رمز الإجازة");
@@ -850,29 +1026,14 @@ export async function generateSickLeavePDF(
 
   // Arabic duration — rendered as a single mixed line via drawMixedText.
   //
-  // Format matches the bot's calculate_duration() output exactly:
-  //     f"{duration_days} يوم  ( {admission_lrm} إلى {discharge_lrm} ) "
-  //     e.g. "1 يوم  ( 09-06-2026 إلى 09-06-2026 ) "
-  // (LRM marks stripped by drawMixedText — see durationAr construction above)
-  //
-  // Bot uses arabic_reshaper + python-bidi (safe_arabic_mixed) to convert
-  // this to visual order. Our drawMixedText splits on Arabic/Latin runs
-  // and lays them out left-to-right in string order, which for this
-  // specific string produces:
-  //     Visual LTR:   "1 يوم  ( <date> إلى <date> ) "
-  //     Reading RTL:  "<date> ) إلى <date> (  يوم 1"
-  // — i.e. number on LEFT visually (read last in RTL), dates on RIGHT
-  //   (read first in RTL). This is the visual order the bot produces too:
-  //   arabic_reshaper + bidi reverses the entire string.
-  //
-  // Per user request: "اجعل الرقم قبل كلمه يوم وليس بعدها" — the number
-  // must appear BEFORE يوم in Arabic reading order. In RTL that means
-  // the number is to the RIGHT of يوم. Our drawMixedText places runs in
-  // string order from LEFT to RIGHT, so we put يوم FIRST and the number
-  // LAST in the string. Visual result:
-  //     Visual LTR:   "<dates> ) إلى <dates> (  يوم 1"
-  //     Reading RTL:  "1 يوم  ( <dates> إلى <dates> )"
-  // — number read FIRST (rightmost) ✓, يوم read SECOND ✓
+  // The durationAr string is already constructed in the bot's post-BiDi
+  // visual LTR order — see the comment where durationAr is defined above.
+  // drawMixedText simply lays out runs left-to-right in string order, so
+  // the visual result on screen matches the bot's BiDi-reversed output:
+  //     Visual LTR (screen, left → right):
+  //         ") 10-06-2026 إلى 09-06-2026 (  يوم 1"
+  //     Arabic RTL reading (right → left):
+  //         "1 يوم  ( 09-06-2026 إلى 10-06-2026 )"
   //
   // Font: this cell uses Amiri (Amiri-Arabic for Arabic runs, Amiri-Latin
   // for digit/Latin runs) per user request — see useAmiri option below.
@@ -928,12 +1089,15 @@ export async function generateSickLeavePDF(
   // Name — bot applies .upper() to patient_name_en (matches Python:
   //   processed_data.get('patient_name_en', '').upper())
   // Only the English value is uppercased; Arabic value is unchanged.
+  // uppercaseEn: true routes the English value through renderLongNameCell,
+  // which avoids mid-word hyphen breaks and keeps short names on one line.
   drawRow(
     "Name",
     { en: (patient.name_en || "").toUpperCase(), ar: patient.name_ar || "" },
     "الاسم",
     true,
     "#f7f7f7",
+    { uppercaseEn: true },
   );
 
   drawRow("National ID / Iqama", patient.identity_number, "رقم الهوية / الإقامة");
@@ -981,12 +1145,14 @@ export async function generateSickLeavePDF(
 
   // Practitioner Name — bot applies .upper() to doctor_name_en (matches Python:
   //   processed_data.get("doctor_name_en", "").upper())
+  // uppercaseEn: true routes the English value through renderLongNameCell.
   drawRow(
     "Practitioner Name",
     { en: (patient.doctor_name_en || "").toUpperCase(), ar: patient.doctor_name_ar },
     "اسم الممارس",
     true,
     "#f7f7f7",
+    { uppercaseEn: true },
   );
 
   drawRow(
