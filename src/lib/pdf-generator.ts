@@ -1013,27 +1013,30 @@ export async function generateSickLeavePDF(
   const duration = `${patient.day_count || 0} day (${startDateFormatted} to ${endDateFormatted})`;
   const durText = getArabicDuration(patient.day_count);
 
-  // Arabic duration line — uses processArabicBiDi (port of the Python bot's
-  // safe_arabic_mixed) to convert logical-order text into visual-order
-  // (post-BiDi) display text.
+  // Arabic duration line — built in LOGICAL order (NOT pre-BiDi'd).
   //
   // Logical input (matching the bot's calculate_duration line 218):
   //     f"{days} يوم ( {LRM}{start}{LRM} إلى {LRM}{end}{LRM} )"
   //
-  // After processArabicBiDi the string becomes visual LTR with Arabic runs
-  // already shape-substituted into presentation forms. Reading the visual
-  // LTR string right-to-left gives the desired RTL display:
-  //     "2 يوم ( 09-06-2026 إلى 10-06-2026 )"
+  // We pass this LOGICAL string directly to drawMixedText with
+  // `preShaped: false` so PDFKit applies BiDi + Arabic shaping itself
+  // (via the `rtla` OpenType feature). This is the SAME path used by
+  // every other Arabic cell (drawTextAr) and produces correctly shaped
+  // and ordered Arabic words (يوم, إلى).
   //
-  // LRM marks (U+200E) are included in the LOGICAL input because the BiDi
-  // algorithm needs them to keep dates in DD-MM-YYYY order within an RTL
-  // context. They are stripped from the visual output before rendering
-  // (Times-Roman lacks the U+200E glyph → would render as tofu boxes).
-  // See drawMixedText's Cf-stripping.
+  // Previously we pre-processed the string with processArabicBiDi and
+  // passed presentation forms with `preShaped: true`. But PDFKit ALSO
+  // applies its own BiDi internally, which re-reversed the already-
+  // reversed Arabic runs — causing the words to render as "موي" and
+  // "ىلإ" instead of "يوم" and "إلى". Switching to logical-order input
+  // lets PDFKit do BiDi exactly once.
+  //
+  // LRM marks (U+200E) are included for safety; drawMixedText strips
+  // them (Times-Roman lacks the U+200E glyph → would render as tofu).
   const LRM = "\u200e";
   const durationArLogical =
     `${patient.day_count || 1} يوم ( ${LRM}${startDateFormatted}${LRM} إلى ${LRM}${endDateFormatted}${LRM} )`;
-  const durationAr = processArabicBiDi(durationArLogical);
+  const durationAr = durationArLogical;
 
   // --- Row 1: Leave ID ---
   drawRow("Leave ID", patient.gsl_code, "رمز الإجازة");
@@ -1108,33 +1111,32 @@ export async function generateSickLeavePDF(
 
   // Arabic duration — rendered as a single mixed line via drawMixedText.
   //
-  // The durationAr string is already constructed in the bot's post-BiDi
-  // visual LTR order — see the comment where durationAr is defined above.
-  // drawMixedText simply lays out runs left-to-right in string order, so
-  // the visual result on screen matches the bot's BiDi-reversed output:
-  //     Visual LTR (screen, left → right):
-  //         ") 10-06-2026 إلى 09-06-2026 (  يوم 1"
-  //     Arabic RTL reading (right → left):
-  //         "1 يوم  ( 09-06-2026 إلى 10-06-2026 )"
+  // durationAr is in LOGICAL order (see comment above). drawMixedText
+  // splits it into runs (Arabic vs Latin/digit) and passes each run to
+  // PDFKit's doc.text(). PDFKit applies BiDi + the `rtla` OpenType
+  // feature to the Arabic runs, producing correctly shaped Arabic words
+  // (يوم, إلى) reading right-to-left.
+  //
+  // Visual result on screen (left → right):
+  //     "2 يوم ( 09-06-2026 إلى 10-06-2026 )"
+  // Arabic RTL reading (right → left):
+  //     "2 يوم ( 09-06-2026 إلى 10-06-2026 )"
   //
   // Font: this cell uses the SAME fonts as every other cell —
   // NotoSansArabic for Arabic runs, Times-Roman for Latin/digit runs.
-  // (Previously used Amiri here, but Amiri's larger line metrics caused
-  //  this cell's text to sit at a slightly different vertical level than
-  //  the adjacent English duration cell. Reverted to match the Python
-  //  bot's render_mixed_font_cell_v2 which uses NotoSansArabic + Times.)
   //
-  // Vertical centering: use the SAME metric as cell 2 (English duration) —
-  // Times-Roman line height. This guarantees both cells text appears at
-  // the same vertical level, both vertically centered like other cells.
+  // Vertical alignment: use `alignTop: false` (the default) so the
+  // Latin-baseline yOffset is APPLIED. This shifts the Latin/digit runs
+  // DOWN by (arabicLineH - latinLineH), aligning their baseline with
+  // the Arabic baseline. Without this, Arabic text (which has a larger
+  // ascent) sits visually LOWER than the digits — exactly the "raise
+  // the Arabic words to the level of the numbers" complaint.
   //
-  // `alignTop: true` disables the Latin-baseline yOffset inside
-  // drawMixedText, so all runs (Arabic + Latin) render at the SAME Y.
-  // This mirrors the bot's per-character write() which places every
-  // char at the same Y regardless of font.
+  // Centering uses the Arabic line height (the tallest line box) so the
+  // combined line stays vertically centered within rowH.
 
-  doc.font(fontEnReg).fontSize(durFontSize);
-  const centeringLineH = doc.heightOfString("0");
+  doc.font(fontArReg).fontSize(durFontSize);
+  const centeringLineH = doc.heightOfString("م");
   const yCell = currentY + (rowH - centeringLineH) / 2;
 
   drawMixedText(durationAr, startX + col1W + subColW + 10, yCell, {
@@ -1143,8 +1145,8 @@ export async function generateSickLeavePDF(
     fontSize: durFontSize,
     color: "#ffffff",
     weight: "regular",
-    alignTop: true,    // <-- no yOffset, matches bot's render_mixed_font_cell_v2
-    preShaped: true,   // <-- text is post-BiDi (presentation forms); do NOT apply rtla
+    alignTop: false,   // <-- apply yOffset to align Latin baseline with Arabic
+    preShaped: false,  // <-- logical-order text; let PDFKit do BiDi + rtla shaping
   });
 
   doc.restore();

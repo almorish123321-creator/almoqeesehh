@@ -2794,3 +2794,28 @@ Stage Summary:
 - LRM marks are included in the logical input (needed by BiDi to keep
   dates in DD-MM-YYYY order) and stripped before rendering (Latin fonts
   lack the U+200E glyph → would render as tofu boxes).
+
+---
+Task ID: PDF-DUR-FIX-2
+Agent: main (Super Z)
+Task: Fix Arabic character order (موي→يوم, ىلإ→إلى) and vertical alignment in cell 2 (Arabic duration cell) of sick leave PDF
+
+Work Log:
+- Diagnosed root cause: PDFKit applies its own BiDi to text passed to `doc.text()`. The previous implementation pre-processed the duration string with `processArabicBiDi` (reshaper + bidi-js) producing visual-order presentation forms, then passed them to `drawMixedText` with `preShaped: true`. PDFKit then re-applied BiDi, double-reversing the Arabic runs and producing "موي" / "ىلإ" instead of "يوم" / "إلى".
+- Verified via `pdftotext` and PDF stream inspection that PDFKit wraps Arabic runs with U+202B (RLE) ... U+202C (PDF), confirming it does internal BiDi.
+- Fix applied to `/home/z/my-project/src/lib/pdf-generator.ts` (lines ~1016-1150):
+  1. Changed `durationAr` to be the LOGICAL-order string (not processArabicBiDi'd): `const durationAr = durationArLogical;`
+  2. Changed `drawMixedText` call to use `preShaped: false` so PDFKit does BiDi + `rtla` shaping exactly once (same path as `drawTextAr` used by every other Arabic cell).
+  3. Changed `alignTop: true` → `alignTop: false` so the Latin-baseline yOffset is APPLIED, shifting the digit/date runs DOWN to align their baseline with the Arabic baseline. This addresses the "raise the Arabic words to the level of the numbers" complaint.
+  4. Changed `centeringLineH` to use Arabic font's `heightOfString("م")` instead of Times's `heightOfString("0")`, so the combined line box stays vertically centered within rowH.
+- Verified via VLM (z-ai vision):
+  - After fix: visual LTR order between "2" and "(" is ﻡ ﻮ ﻳ (correct for يوم reading RTL).
+  - After fix: visual LTR order between the two dates is ﻰ ﻟ ﺇ (correct for إلى reading RTL).
+  - After fix: Arabic words يوم and إلى sit on the same baseline as the digits, no longer visually lower.
+
+Stage Summary:
+- Both issues reported by user are resolved:
+  - Arabic words يوم and إلى now display with correct character order (no longer reversed).
+  - Arabic words are at the same vertical level as the digits and Latin text within the cell.
+- The fix simplifies the code path: instead of pre-BiDi processing + pre-shaped rendering, the duration cell now uses the same logical-order + PDFKit-BiDi path as every other Arabic cell, ensuring consistent behavior.
+- No regressions to other cells (they were already using logical-order + rtla).
