@@ -24,6 +24,35 @@ import PDFDocument from "pdfkit";
 import QRCode from "qrcode";
 import fs from "fs";
 import path from "path";
+import bidiFactory from "bidi-js";
+import arabicReshaper from "arabic-reshaper";
+
+// ============================================================
+// Arabic BiDi + Reshaping — exact port of the Python bot's
+// `safe_arabic_mixed` (line 59 of pdf_generator_updated (2).py).
+//
+// The bot uses `arabic_reshaper.reshape(text)` + `bidi.algorithm.get_display(text)`
+// to convert logical-order Arabic into visual-order (post-BiDi) display text.
+// We replicate that here with the JS equivalents: `arabic-reshaper` (Louay
+// Alakkad's port) and `bidi-js` (lojjic's UBA implementation).
+//
+// The output string is in VISUAL LTR order: read left-to-right on screen,
+// but each Arabic run is already reversed and shape-substituted to its
+// presentation form (U+FE70-U+FEFF range). This means the renderer must
+// NOT apply PDFKit's `features: ["rtla"]` (which would re-shape already-
+// shaped chars and break them).
+// ============================================================
+const bidiEngine = bidiFactory();
+function processArabicBiDi(text: string): string {
+  if (!text) return "";
+  try {
+    const reshaped = arabicReshaper.convertArabic(text);
+    const levels = bidiEngine.getEmbeddingLevels(reshaped);
+    return bidiEngine.getReorderedString(reshaped, levels);
+  } catch (e) {
+    return text;
+  }
+}
 
 // ============================================================
 // Types — mirror the shape of `patient`, `hospital`, `doctor`
@@ -461,10 +490,12 @@ export async function generateSickLeavePDF(
     // In that case fall back to drawTextAr default.
     const hasMixed = runs.some((r) => r.isArabic) && runs.some((r) => !r.isArabic);
     if (!hasMixed) {
-      // All Arabic, or all Latin — fall back to default path
+      // All Arabic, or all Latin — fall back to default path.
+      // If text is pre-shaped (post-BiDi presentation forms), do NOT apply
+      // rtla — it would re-shape already-shaped chars and break them.
       const defaultOptions: DrawOpts = {
         align: "right",
-        features: ["rtla"],
+        features: options.preShaped ? [] : ["rtla"],
       };
       if (options.fontSize) doc.fontSize(options.fontSize);
       if (options.color) doc.fillColor(options.color);
@@ -515,15 +546,24 @@ export async function generateSickLeavePDF(
     const yOffset = options.alignTop === true ? 0 : arabicLineH - latinLineH;
 
     // Render runs in visual order (left to right in the line).
-    // Note: each Arabic run's internal text is already shaped + reordered
-    // by NotoArabic + rtla, so it will appear correctly RTL within its run.
+    //
+    // `preShaped: true` (used by cell 2 row 2 duration cell) means the text
+    // has already been processed by processArabicBiDi — Arabic chars are
+    // already in presentation form (U+FE70-U+FEFF). We must NOT apply
+    // `features: ["rtla"]` because PDFKit would try to re-shape already-
+    // shaped chars, breaking the glyphs.
+    //
+    // `preShaped: false` (default, used by the footer's license line)
+    // means the text is in logical order. We DO apply rtla so PDFKit
+    // shapes the Arabic.
+    const arabicFeatures = options.preShaped ? [] : ["rtla"];
     let curX = startX;
     for (let k = 0; k < runs.length; k++) {
       const run = runs[k];
       if (run.isArabic) {
         doc.font(fontArabic).fontSize(fontSize).fillColor(color);
         doc.text(run.text, curX, y, {
-          features: ["rtla"],
+          features: arabicFeatures,
           align: "left",
           lineBreak: false,
         });
@@ -973,39 +1013,27 @@ export async function generateSickLeavePDF(
   const duration = `${patient.day_count || 0} day (${startDateFormatted} to ${endDateFormatted})`;
   const durText = getArabicDuration(patient.day_count);
 
-  // Arabic duration line — visual LTR order matching the bot's BiDi output.
+  // Arabic duration line — uses processArabicBiDi (port of the Python bot's
+  // safe_arabic_mixed) to convert logical-order text into visual-order
+  // (post-BiDi) display text.
   //
-  // User wants the cell to read (RTL):
+  // Logical input (matching the bot's calculate_duration line 218):
+  //     f"{days} يوم ( {LRM}{start}{LRM} إلى {LRM}{end}{LRM} )"
+  //
+  // After processArabicBiDi the string becomes visual LTR with Arabic runs
+  // already shape-substituted into presentation forms. Reading the visual
+  // LTR string right-to-left gives the desired RTL display:
   //     "2 يوم ( 09-06-2026 إلى 10-06-2026 )"
   //
-  // Bot source constructs: f"{days} يوم  ( {admission} إلى {discharge} ) "
-  // then applies `safe_arabic_mixed` (arabic_reshaper + python-bidi) which
-  // reverses the visual run order for RTL display.
-  //
-  // Our drawMixedText does NOT apply BiDi — it lays runs out left-to-right
-  // in string order. So we manually construct the string in post-BiDi
-  // visual LTR order so that when read right-to-left it matches the user's
-  // desired output:
-  //
-  //     Desired RTL reading: "2 يوم ( 09-06-2026 إلى 10-06-2026 )"
-  //     Visual LTR string:   ") 10-06-2026 إلى 09-06-2026 ( يوم 2"
-  //
-  // Reading the visual LTR string right-to-left:
-  //   — '2' (rightmost) read FIRST ✓
-  //   — 'يوم' read SECOND ✓
-  //   — '(' opening paren ✓
-  //   — '09-06-2026' (startDate/admission) ✓
-  //   — 'إلى' (to) ✓
-  //   — '10-06-2026' (endDate/discharge) ✓
-  //   — ')' closing paren (leftmost) ✓
-  //
-  // LRM marks (U+200E) are NOT included because:
-  //   1. They're only needed by the BiDi algorithm, which we don't run.
-  //   2. Latin fonts (Times-Roman, Amiri-Latin) lack the U+200E glyph →
-  //      render as tofu □ boxes.
-  // (See drawMixedText's Cf-stripping for the defensive version.)
-  const durationAr =
-    `) ${endDateFormatted} إلى ${startDateFormatted} ( يوم ${patient.day_count || 1} `;
+  // LRM marks (U+200E) are included in the LOGICAL input because the BiDi
+  // algorithm needs them to keep dates in DD-MM-YYYY order within an RTL
+  // context. They are stripped from the visual output before rendering
+  // (Times-Roman lacks the U+200E glyph → would render as tofu boxes).
+  // See drawMixedText's Cf-stripping.
+  const LRM = "\u200e";
+  const durationArLogical =
+    `${patient.day_count || 1} يوم ( ${LRM}${startDateFormatted}${LRM} إلى ${LRM}${endDateFormatted}${LRM} )`;
+  const durationAr = processArabicBiDi(durationArLogical);
 
   // --- Row 1: Leave ID ---
   drawRow("Leave ID", patient.gsl_code, "رمز الإجازة");
@@ -1115,7 +1143,8 @@ export async function generateSickLeavePDF(
     fontSize: durFontSize,
     color: "#ffffff",
     weight: "regular",
-    alignTop: true, // <-- no yOffset, matches bot's render_mixed_font_cell_v2
+    alignTop: true,    // <-- no yOffset, matches bot's render_mixed_font_cell_v2
+    preShaped: true,   // <-- text is post-BiDi (presentation forms); do NOT apply rtla
   });
 
   doc.restore();
@@ -1332,12 +1361,11 @@ export async function generateSickLeavePDF(
       // In RTL reading order: "رقم الترخيص : <number>" — Arabic label
       // first (rightmost), then colon, then digits (leftmost).
       //
-      // Our drawMixedText lays out runs in string order from LEFT to
-      // RIGHT, so to match the bot's RTL output we put the digits FIRST
-      // in the string and the Arabic label LAST. Final visual result:
-      //     Visual LTR:  "<licNum> : رقم الترخيص"
-      //     Reading RTL: "رقم الترخيص : <licNum>"
-      const fullLine = `رقم الترخيص : ${licNum}`;
+      // We use processArabicBiDi (port of the bot's safe_arabic_mixed) to
+      // convert the logical-order string into visual-order display text,
+      // then pass it to drawMixedText with preShaped:true so PDFKit does
+      // NOT try to re-shape the already-shaped Arabic chars.
+      const fullLine = processArabicBiDi(`رقم الترخيص : ${licNum}`);
 
       drawMixedText(fullLine, rightCenterX - 125, footerY + 165, {
         width: 250,
@@ -1345,6 +1373,7 @@ export async function generateSickLeavePDF(
         weight: "bold",
         fontSize: 12,
         color: "#000000",
+        preShaped: true, // post-BiDi presentation forms — do NOT apply rtla
       });
     }
   }

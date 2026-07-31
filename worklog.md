@@ -2713,3 +2713,84 @@ Stage Summary:
   spread to top/bottom halves of the row).
 - Single-line uppercase names still render on one line, centered.
 - Long uppercase names still put majority of words on line 1.
+
+---
+Task ID: bidi-fix-1
+Agent: main
+Task: Cell 2 of row 2 (Arabic duration cell) was still showing wrong text order and Arabic words floating above numbers. Fix it to display exactly "2 يوم ( 09-06-2026 إلى 10-06-2026 )" with proper baseline alignment and parentheses positions.
+
+Work Log:
+- Root cause analysis using `pdftotext -bbox`:
+  - Current visual LTR layout was: ") <end> إلى <start> ( يوم <days>"
+  - Reading RTL gave: "<days> يوم ( <start> إلى <end> )" — text order
+    was right, but visually the Arabic words appeared HIGHER than the
+    numbers because of how PDFKit + NotoArabic rtla feature handled the
+    manually-reversed string.
+  - Parentheses appeared visually "reversed" because the manual string
+    construction put `)` on the left and `(` on the right.
+
+- Discovered the Python bot uses `safe_arabic_mixed` (arabic_reshaper +
+  python-bidi) to convert LOGICAL-order text into VISUAL-order display
+  text with proper BiDi processing. This produces a string where:
+    - Arabic chars are in PRESENTATION FORM (U+FE70-U+FEFF range)
+    - Already shape-substituted and reversed
+    - Parentheses are correctly positioned by the BiDi algorithm
+    - LRM marks around dates keep them in DD-MM-YYYY order
+
+- Tested Python's arabic_reshaper + bidi to get the exact expected output:
+  Input (logical): "2 يوم ( LRM 09-06-2026 LRM إلى LRM 10-06-2026 LRM )"
+  Output (visual): "( LRM 10-06-2026 LRM ﻰﻟﺇ LRM 09-06-2026 LRM ) ﻡﻮﻳ 2"
+  Reading RTL: "2 يوم ( 09-06-2026 إلى 10-06-2026 )" ✓
+
+- Installed JS equivalents:
+    npm install bidi-js
+  (arabic-reshaper was already in package.json)
+
+- Added `processArabicBiDi(text)` function at top of pdf-generator.ts —
+  a port of the bot's safe_arabic_mixed:
+    1. reshape = arabicReshaper.convertArabic(text)  // shape Arabic
+    2. levels = bidiEngine.getEmbeddingLevels(reshape)
+    3. return bidiEngine.getReorderedString(reshape, levels)
+
+- Updated durationAr construction:
+  OLD (manual reversal):
+    `) ${end} إلى ${start} ( يوم ${days} `
+  NEW (logical input + BiDi):
+    LRM = "\u200e"
+    logical = `${days} يوم ( ${LRM}${start}${LRM} إلى ${LRM}${end}${LRM} )`
+    durationAr = processArabicBiDi(logical)
+
+- Added `preShaped?: boolean` option to drawMixedText:
+  When true, Arabic runs are rendered WITHOUT `features: ["rtla"]` because
+  the text is already in presentation form (post-BiDi). Applying rtla
+  would re-shape already-shaped chars and break them.
+
+- Updated both drawMixedText callers:
+  1. Cell 2 row 2 (duration cell): added `preShaped: true`
+  2. Footer license line: also routed through processArabicBiDi and
+     added `preShaped: true` for consistency with the bot.
+
+Verification (local):
+- Generated /tmp/full-test.pdf, extracted word positions via pdftotext.
+- Confirmed visual LTR layout is now:
+    "( 10-06-2026 ﺇﻟﻰ 09-06-2026 ) ﻳﻮم 2"
+  (matches Python bot's BiDi output exactly)
+- VLM verified: text reads "2 يوم ( 09-06-2026 إلى 10-06-2026 )" ✓
+- VLM verified: Arabic words and numbers at SAME baseline ✓
+- VLM verified: parentheses in correct positions ✓
+- VLM verified license line: "رقم الترخيص : 1410101201200443" with no
+  tofu boxes, all on same baseline ✓
+
+Stage Summary:
+- Cell 2 of row 2 now uses the bot's exact BiDi processing approach
+  (arabic_reshaper + bidi-js), producing visual output identical to
+  the Python bot.
+- Arabic chars are in presentation form (U+FE70-U+FEFF) and rendered
+  without rtla — no more baseline misalignment between Arabic words
+  and Latin numbers/dates.
+- Parentheses are positioned correctly by the BiDi algorithm — no more
+  visual reversal.
+- Footer license line also uses the same BiDi approach for consistency.
+- LRM marks are included in the logical input (needed by BiDi to keep
+  dates in DD-MM-YYYY order) and stripped before rendering (Latin fonts
+  lack the U+200E glyph → would render as tofu boxes).
