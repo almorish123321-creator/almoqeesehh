@@ -641,14 +641,29 @@ export async function generateSickLeavePDF(
       return;
     }
 
-    // Case 4: render 2 lines — each line centered WITHIN ITS HALF of the row.
-    // Matches bot's render_long_name_cell:
-    //   line_height = height / 2
-    //   Line 1 cell: [y, y + h/2] → text at y + (h/2 - naturalH) / 2
-    //   Line 2 cell: [y + h/2, y + h] → text at y + h/2 + (h/2 - naturalH) / 2
-    const lineH = cellH / 2;
-    const line1Y = cellY + (lineH - singleLineH) / 2;
-    const line2Y = cellY + lineH + (lineH - singleLineH) / 2;
+    // Case 4: render 2 lines — both lines clustered together in the
+    // vertical center of the row, with a small gap between them.
+    //
+    // User explicitly requested a SMALLER gap between the two lines
+    // (originally we used bot's per-half centering which left a large
+    // gap because each line sat in the center of its half-row).
+    //
+    // New approach:
+    //   - Use natural single-line height for both lines.
+    //   - Add a small inter-line gap (4pt) — visually tighter than half-row.
+    //   - Cluster both lines as a single block, centered vertically in
+    //     the entire row height.
+    //
+    // Computation:
+    //   totalBlockH = singleLineH * 2 + gap
+    //   blockTopY   = cellY + (cellH - totalBlockH) / 2
+    //   line1Y      = blockTopY
+    //   line2Y      = blockTopY + singleLineH + gap
+    const gap = 4; // tight inter-line gap (pt)
+    const totalBlockH = singleLineH * 2 + gap;
+    const blockTopY = cellY + (cellH - totalBlockH) / 2;
+    const line1Y = blockTopY;
+    const line2Y = blockTopY + singleLineH + gap;
 
     doc.font(fontToUse).fontSize(fontSize).fillColor(color);
     doc.text(line1, cellX, line1Y, {
@@ -960,33 +975,37 @@ export async function generateSickLeavePDF(
 
   // Arabic duration line — visual LTR order matching the bot's BiDi output.
   //
+  // User wants the cell to read (RTL):
+  //     "2 يوم ( 09-06-2026 إلى 10-06-2026 )"
+  //
   // Bot source constructs: f"{days} يوم  ( {admission} إلى {discharge} ) "
   // then applies `safe_arabic_mixed` (arabic_reshaper + python-bidi) which
-  // reverses the visual run order for RTL display. Final bot visual LTR:
-  //     ") <discharge> إلى <admission> (  يوم <days> "
+  // reverses the visual run order for RTL display.
   //
   // Our drawMixedText does NOT apply BiDi — it lays runs out left-to-right
-  // in string order. So to match the bot's visual output we manually
-  // construct the string in the bot's post-BiDi visual LTR order:
-  //     String:    ") <endDate> إلى <startDate> (  يوم <days> "
-  //     Visual LTR (what you see on screen, left → right):
-  //                ") 10-06-2026 إلى 09-06-2026 (  يوم 1"
-  //     Arabic RTL reading (right → left):
-  //                "1 يوم  ( 09-06-2026 إلى 10-06-2026 )"
-  // — number read FIRST (rightmost) ✓
-  // — يوم read SECOND ✓
-  // — "(" read as opening (visually on the right of paren content) ✓
-  // — startDate (admission) read before "إلى" ✓
-  // — endDate (discharge) read after "إلى" ✓
-  // — ")" read as closing (visually on the left of paren content) ✓
+  // in string order. So we manually construct the string in post-BiDi
+  // visual LTR order so that when read right-to-left it matches the user's
+  // desired output:
+  //
+  //     Desired RTL reading: "2 يوم ( 09-06-2026 إلى 10-06-2026 )"
+  //     Visual LTR string:   ") 10-06-2026 إلى 09-06-2026 ( يوم 2"
+  //
+  // Reading the visual LTR string right-to-left:
+  //   — '2' (rightmost) read FIRST ✓
+  //   — 'يوم' read SECOND ✓
+  //   — '(' opening paren ✓
+  //   — '09-06-2026' (startDate/admission) ✓
+  //   — 'إلى' (to) ✓
+  //   — '10-06-2026' (endDate/discharge) ✓
+  //   — ')' closing paren (leftmost) ✓
   //
   // LRM marks (U+200E) are NOT included because:
   //   1. They're only needed by the BiDi algorithm, which we don't run.
-  //   2. Amiri-Latin (used for Latin runs in this cell) lacks the U+200E
-  //      glyph → renders as tofu □ boxes before each date.
+  //   2. Latin fonts (Times-Roman, Amiri-Latin) lack the U+200E glyph →
+  //      render as tofu □ boxes.
   // (See drawMixedText's Cf-stripping for the defensive version.)
   const durationAr =
-    `) ${endDateFormatted} إلى ${startDateFormatted} (  يوم ${patient.day_count || 1} `;
+    `) ${endDateFormatted} إلى ${startDateFormatted} ( يوم ${patient.day_count || 1} `;
 
   // --- Row 1: Leave ID ---
   drawRow("Leave ID", patient.gsl_code, "رمز الإجازة");
