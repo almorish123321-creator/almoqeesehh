@@ -2471,3 +2471,69 @@ Stage Summary:
 - User's reference image (IMG_٢٠٢٦٠٧٢٩_١٨٢٢٤٥.jpg) shows the desired Amiri font for cell 2 of row 2; we applied Amiri globally for visual consistency
 - All previously-working features preserved: QR opens /inquiry, slash renders correctly (bold + extra spaces), license number digits render correctly, kingdom header at 180pt, duration cell vertical centering
 - Production deployment in progress via Vercel auto-deploy
+
+---
+Task ID: MATCH-BOT-FORMAT
+Agent: main agent
+Task: Align pdf-generator.ts with reference Python bot (pdf_generator_updated (2).py) — apply UPPERCASE to Name + Practitioner Name English values, sync license number format, sync Arabic duration cell format.
+
+User request: 'تحويل مولد PDF (TypeScript) ليطابق تنسيق البوت (Python)' — three changes per spec:
+  1. UPPERCASE English values in Name and Practitioner Name rows only
+  2. Sync license number format to bot's f"رقم الترخيص : {license_value}"
+  3. Sync Arabic duration cell to bot's f"{duration_days} يوم  ( {admission_lrm} إلى {discharge_lrm} ) "
+
+Work Log:
+- Read reference bot source: /home/z/my-project/upload/pdf_generator_updated (2).py
+- Identified three target behaviors in the bot:
+  a) Line 314: ['Name', processed_data.get('patient_name_en', '').upper(), ...]
+  b) Line 321: ["Practitioner Name", processed_data.get("doctor_name_en", "").upper(), ...]
+  c) Line 218: duration_ar = f"{duration_days} يوم  ( {admission_lrm} إلى {discharge_lrm} ) "
+  d) Line 655: full_line = f"رقم الترخيص : {license_value}"
+
+Changes to src/lib/pdf-generator.ts:
+1. Name row (line 924-930):
+   - Was: { en: patient.name_en, ... }
+   - Now: { en: (patient.name_en || "").toUpperCase(), ... }
+2. Practitioner Name row (line 977-983):
+   - Was: { en: patient.doctor_name_en, ... }
+   - Now: { en: (patient.doctor_name_en || "").toUpperCase(), ... }
+3. License number line (line 1115):
+   - Was: const fullLine = `${licNum} : رقم الترخيص`;
+   - Now: const fullLine = `رقم الترخيص : ${licNum}`;
+   Visual output is identical (drawMixedText splits on Arabic/Latin runs and
+   lays them out LTR, mirroring arabic_reshaper + bidi's RTL output).
+4. Arabic duration cell (lines 771-782):
+   - Was: `(${hDateFrom} الى ${hDateTo}) ${durTxt} ${durNum}` (manually split)
+   - Now: `${patient.day_count || 1} يوم  ( ${LRM}${startDateFormatted}${LRM} إلى ${LRM}${endDateFormatted}${LRM} ) `
+   Matches the bot's calculate_duration() output exactly. LRM marks are
+   stripped by drawMixedText before rendering, so they have no visual effect
+   — kept only for source-level parity with the bot.
+
+Verification (local + production):
+- Generated local test PDF (/tmp/full-test.pdf, 135614 bytes).
+- VLM (glm-5v-turbo) verified:
+  - Name row: TALIN MARIE AWAD AL-QAHTANI (UPPERCASE) ✓
+    Wraps to 2 lines naturally — same behaviour as bot's render_long_name_cell
+  - Practitioner Name row: NABIL HANNA NASR (UPPERCASE) ✓
+  - Nationality: Saudi (mixed case, NOT uppercased) ✓
+  - Employer: University Student (mixed case, NOT uppercased) ✓
+  - Position: General (mixed case, NOT uppercased) ✓
+  - Duration Arabic cell: '1 يوم ( 09-06-2026 إلى 09-06-2026 )' ✓
+  - License line: 'رقم الترخيص: 1410101201200443' (digits render as actual
+    numbers, no squares) ✓
+- Pushed to GitHub: 9a405c6 -> 295b187 (rebased on top of remote 1457a92).
+- Vercel auto-deploy completed.
+- Tested production endpoint /api/generate-pdf — 135622 bytes returned.
+- VLM verified production PDF: identical results to local test.
+
+Stage Summary:
+- Name and Practitioner Name English values are now UPPERCASE — matches
+  the bot's .upper() calls exactly.
+- License number line uses the same string template as the bot.
+- Arabic duration cell uses the same string template as the bot, including
+  LRM marks (which are stripped before rendering for visual parity).
+- All other rows are NOT uppercased — only Name and Practitioner Name,
+  exactly as the user specified.
+- Fonts preserved: Noto Sans Arabic for all Arabic text except the
+  duration cell (Amiri), Times-Roman/Times-Bold for Latin/digits.
+- Production live at https://almoqeesehh.vercel.app
