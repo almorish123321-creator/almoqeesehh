@@ -2819,3 +2819,46 @@ Stage Summary:
   - Arabic words are at the same vertical level as the digits and Latin text within the cell.
 - The fix simplifies the code path: instead of pre-BiDi processing + pre-shaped rendering, the duration cell now uses the same logical-order + PDFKit-BiDi path as every other Arabic cell, ensuring consistent behavior.
 - No regressions to other cells (they were already using logical-order + rtla).
+
+---
+Task ID: PDF-DUR-FIX-3
+Agent: main (Super Z)
+Task: Final fix for Arabic character order in duration cell — bypass PDFKit's BiDi by rendering each char individually
+
+Work Log:
+- Diagnosed that PDFKit ALWAYS applies its internal BiDi algorithm to any text containing Arabic-range characters (U+0600-U+06FF, U+FB50-U+FEFF). There is no PDFKit option to disable BiDi.
+- Verified via PDF stream inspection that even when passing pre-shaped presentation forms (U+FB50-U+FEFF) with features:[], PDFKit still normalizes them to basic forms and applies BiDi reversal.
+- The previous fix (Task PDF-DUR-FIX-2) used logical-order text with rtla, which produced BiDi-reversed visual order "موي" (LTR). Reading RTL gives "يوم" (correct), but the user reads the visual LTR order and sees "موي" as wrong.
+- The user's expected output "2 يوم ( 09-06-2026 إلى 10-06-2026 )" is the LOGICAL order displayed LTR — i.e., NO BiDi reversal.
+
+Root cause:
+- PDFKit's BiDi is unavoidable for multi-char Arabic text.
+- A SINGLE character cannot be reversed by BiDi (nothing to reverse).
+
+Fix applied to /home/z/my-project/src/lib/pdf-generator.ts:
+1. Added new function `drawMixedTextCharByChar` (lines ~619-707) that renders each character INDIVIDUALLY at sequential LTR positions:
+   - Pre-shapes the text with arabic-reshaper (preserves cursive connection appearance)
+   - For each char: if Arabic, render with Arabic font + features:[] (no rtla, already shaped); if Latin/digit, render with Latin font
+   - Positions each char at increasing X coordinates, forcing visual LTR = logical order
+   - Applies Latin-baseline yOffset to align Latin chars with Arabic baseline
+   - Centers the whole line within the given width
+
+2. Updated the duration cell call (lines ~1250-1274) to use `drawMixedTextCharByChar` instead of `drawMixedText`:
+   - Input: durationAr = arabicReshaper.convertArabic(durationArLogical) — pre-shaped, logical order
+   - Output: visual LTR = "2 يوم ( 09-06-2026 إلى 10-06-2026 )" — matches user's expectation
+
+3. Updated the durationAr construction (lines ~1016-1049) to pre-shape with arabicReshaper.convertArabic().
+
+Verification (via VLM with --thinking):
+- Visual LTR order is now "2 يوم ( 09-06-2026 إلى 10-06-2026 )" ✓
+- Arabic words يوم and إلى are in LOGICAL order (not reversed) ✓
+- Arabic letters and digits/dates are at the same vertical level (same baseline) ✓
+- No regressions: other Arabic labels (مدة الإجازة, تاريخ الدخول, etc.) still render correctly ✓
+- No text overflow or missing glyphs ✓
+
+Stage Summary:
+- Both user complaints fully resolved:
+  - Arabic words يوم and إلى now display in logical order LTR (no longer reversed to موي / ىلإ)
+  - Arabic words are at the same vertical level as the digits and dates
+- The fix uses a fundamentally different rendering approach (char-by-char) to bypass PDFKit's unavoidable BiDi algorithm
+- Other Arabic cells (using drawTextAr) are unchanged and continue to work correctly

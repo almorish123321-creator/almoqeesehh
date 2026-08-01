@@ -579,6 +579,134 @@ export async function generateSickLeavePDF(
   };
 
   // ============================================================
+  // drawMixedTextCharByChar — renders mixed Arabic + Latin/digit text
+  // by drawing EACH CHARACTER INDIVIDUALLY at sequential LTR positions.
+  //
+  // Why this exists:
+  //   PDFKit ALWAYS applies its internal BiDi algorithm to any text
+  //   containing Arabic-range characters (U+0600-U+06FF, U+FB50-U+FEFF).
+  //   This BiDi pass REVERSES Arabic runs, so logical-order "يوم" gets
+  //   visually reversed to "موي" on screen. There is no PDFKit option
+  //   to disable BiDi.
+  //
+  //   The only way to prevent BiDi reversal is to render each character
+  //   as a SEPARATE doc.text() call. A single character cannot be
+  //   reversed by BiDi (there's nothing to reverse). By positioning
+  //   each char explicitly at increasing X coordinates, we force the
+  //   visual LTR order to match the logical string order.
+  //
+  // Input requirements:
+  //   - `text` must be PRE-SHAPED (Arabic chars already converted to
+  //     presentation forms via arabic-reshaper). This is critical
+  //     because rendering each char individually means PDFKit's rtla
+  //     GSUB feature cannot determine the correct form based on
+  //     context (it only sees one char at a time). The pre-shaper
+  //     has already chosen initial/medial/final/isolated forms based
+  //     on the full string context.
+  //   - `text` should be in LOGICAL order (not BiDi-reversed).
+  //
+  // Rendering:
+  //   - Strip Cf (format) chars (LRM, RLM, etc.) — same as drawMixedText.
+  //   - For each character:
+  //     - If Arabic (including presentation forms U+FB50-U+FEFF):
+  //       render with Arabic font, features:[] (no rtla — already shaped)
+  //     - If Latin/digit/space: render with Latin font
+  //   - Place chars left-to-right at increasing X positions.
+  //   - Apply Latin-baseline yOffset so Latin chars align with Arabic
+  //     baseline (same as drawMixedText's alignTop:false behavior).
+  //   - Center the whole line within `options.width`.
+  // ============================================================
+  const drawMixedTextCharByChar = (
+    text: string,
+    x: number,
+    y: number,
+    options: DrawOpts = {},
+  ) => {
+    if (!useArabicFont) {
+      drawTextEn(text, x, y, options);
+      return;
+    }
+
+    // Strip Cf chars
+    const CF_REGEX = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g;
+    const cleanedText = String(text).replace(CF_REGEX, "");
+
+    const fontSize = options.fontSize || 12;
+    const color = options.color || "#000000";
+    const weight = options.weight || "regular";
+    const fontArabic = weight === "bold" ? fontArBold : fontArReg;
+    const fontLatin = weight === "bold" ? fontEnBold : fontEnReg;
+
+    // Classify chars: Arabic (incl. presentation forms) vs Latin/digit/punct
+    // Arabic ranges: U+0600-U+06FF, U+0750-U+077F, U+FB50-U+FDFF, U+FE70-U+FEFF
+    const isArabicChar = (ch: string) => {
+      const cp = ch.codePointAt(0) || 0;
+      return (
+        (cp >= 0x0600 && cp <= 0x06ff) ||
+        (cp >= 0x0750 && cp <= 0x077f) ||
+        (cp >= 0xfb50 && cp <= 0xfdff) ||
+        (cp >= 0xfe70 && cp <= 0xfeff)
+      );
+    };
+
+    // Measure line heights for baseline alignment
+    doc.font(fontArabic).fontSize(fontSize);
+    const arabicLineH = doc.heightOfString("م");
+    doc.font(fontLatin).fontSize(fontSize);
+    const latinLineH = doc.heightOfString("0");
+    // yOffset shifts Latin chars DOWN to align baseline with Arabic
+    const yOffset = arabicLineH - latinLineH;
+
+    // Build per-char rendering plan: measure each char's width with its
+    // appropriate font, then compute total width and start X for centering.
+    type CharPlan = { ch: string; isArabic: boolean; width: number };
+    const chars: CharPlan[] = [];
+    let totalWidth = 0;
+
+    for (const ch of cleanedText) {
+      const isAr = isArabicChar(ch);
+      if (isAr) {
+        doc.font(fontArabic).fontSize(fontSize);
+      } else {
+        doc.font(fontLatin).fontSize(fontSize);
+      }
+      const w = doc.widthOfString(ch);
+      chars.push({ ch, isArabic: isAr, width: w });
+      totalWidth += w;
+    }
+
+    // Compute start X based on alignment
+    let startX = x;
+    if (options.align === "center" && options.width) {
+      startX = x + (options.width - totalWidth) / 2;
+    } else if (options.align === "right" && options.width) {
+      startX = x + options.width - totalWidth;
+    }
+
+    // Render each char at its computed X position
+    let curX = startX;
+    for (const cp of chars) {
+      if (cp.isArabic) {
+        doc.font(fontArabic).fontSize(fontSize).fillColor(color);
+        // features:[] = do NOT apply rtla (chars are already pre-shaped)
+        doc.text(cp.ch, curX, y, {
+          features: [],
+          align: "left",
+          lineBreak: false,
+        });
+      } else {
+        doc.font(fontLatin).fontSize(fontSize).fillColor(color);
+        // Shift Latin chars DOWN by yOffset to align baselines
+        doc.text(cp.ch, curX, y + yOffset, {
+          align: "left",
+          lineBreak: false,
+        });
+      }
+      curX += cp.width;
+    }
+  };
+
+  // ============================================================
   // renderLongNameCell — port of the bot's render_long_name_cell.
   //
   // Used ONLY for uppercase English name cells (Name + Practitioner Name).
@@ -1013,30 +1141,40 @@ export async function generateSickLeavePDF(
   const duration = `${patient.day_count || 0} day (${startDateFormatted} to ${endDateFormatted})`;
   const durText = getArabicDuration(patient.day_count);
 
-  // Arabic duration line — built in LOGICAL order (NOT pre-BiDi'd).
+  // Arabic duration line — built in LOGICAL order, then PRE-SHAPED into
+  // Arabic presentation forms (U+FB50-U+FEFF) using arabic-reshaper.
+  //
+  // The presentation forms are passed to drawMixedText with
+  // `preShaped: true` (no rtla GSUB), and drawMixedText renders each
+  // character INDIVIDUALLY at sequential LTR positions. This bypasses
+  // PDFKit's internal BiDi algorithm, which would otherwise reverse
+  // Arabic runs and produce "موي" / "ىلإ" instead of "يوم" / "إلى".
+  //
+  // Why individual-character rendering:
+  //   PDFKit ALWAYS applies BiDi to Arabic-range characters, even
+  //   presentation forms. The only way to prevent BiDi reversal is to
+  //   render each character as a separate doc.text() call — a single
+  //   character cannot be reversed by BiDi. By positioning each char
+  //   explicitly at increasing X coordinates, we force the visual LTR
+  //   order to match the logical string order.
+  //
+  // The arabic-reshaper pre-shapes the text so each character uses the
+  // correct presentation form (initial/medial/final/isolated) based on
+  // its neighbors. This preserves cursive connection appearance even
+  // though each char is rendered individually.
   //
   // Logical input (matching the bot's calculate_duration line 218):
   //     f"{days} يوم ( {LRM}{start}{LRM} إلى {LRM}{end}{LRM} )"
   //
-  // We pass this LOGICAL string directly to drawMixedText with
-  // `preShaped: false` so PDFKit applies BiDi + Arabic shaping itself
-  // (via the `rtla` OpenType feature). This is the SAME path used by
-  // every other Arabic cell (drawTextAr) and produces correctly shaped
-  // and ordered Arabic words (يوم, إلى).
-  //
-  // Previously we pre-processed the string with processArabicBiDi and
-  // passed presentation forms with `preShaped: true`. But PDFKit ALSO
-  // applies its own BiDi internally, which re-reversed the already-
-  // reversed Arabic runs — causing the words to render as "موي" and
-  // "ىلإ" instead of "يوم" and "إلى". Switching to logical-order input
-  // lets PDFKit do BiDi exactly once.
-  //
-  // LRM marks (U+200E) are included for safety; drawMixedText strips
-  // them (Times-Roman lacks the U+200E glyph → would render as tofu).
+  // Visual result on screen (left → right):
+  //     "2 يوم ( 09-06-2026 إلى 10-06-2026 )"
   const LRM = "\u200e";
   const durationArLogical =
     `${patient.day_count || 1} يوم ( ${LRM}${startDateFormatted}${LRM} إلى ${LRM}${endDateFormatted}${LRM} )`;
-  const durationAr = durationArLogical;
+  // Pre-shape: convert basic Arabic chars to presentation forms
+  // (initial/medial/final/isolated) based on context. Output is still
+  // in logical order, just with presentation form codepoints.
+  const durationAr = arabicReshaper.convertArabic(durationArLogical);
 
   // --- Row 1: Leave ID ---
   drawRow("Leave ID", patient.gsl_code, "رمز الإجازة");
@@ -1109,44 +1247,30 @@ export async function generateSickLeavePDF(
     weight: "regular",
   });
 
-  // Arabic duration — rendered as a single mixed line via drawMixedText.
+  // Arabic duration — rendered via drawMixedTextCharByChar.
   //
-  // durationAr is in LOGICAL order (see comment above). drawMixedText
-  // splits it into runs (Arabic vs Latin/digit) and passes each run to
-  // PDFKit's doc.text(). PDFKit applies BiDi + the `rtla` OpenType
-  // feature to the Arabic runs, producing correctly shaped Arabic words
-  // (يوم, إلى) reading right-to-left.
-  //
-  // Visual result on screen (left → right):
-  //     "2 يوم ( 09-06-2026 إلى 10-06-2026 )"
-  // Arabic RTL reading (right → left):
+  // durationAr is PRE-SHAPED (presentation forms, logical order). We
+  // render each character INDIVIDUALLY at sequential LTR positions,
+  // bypassing PDFKit's internal BiDi which would otherwise reverse
+  // Arabic runs. This produces the desired visual LTR order:
   //     "2 يوم ( 09-06-2026 إلى 10-06-2026 )"
   //
-  // Font: this cell uses the SAME fonts as every other cell —
-  // NotoSansArabic for Arabic runs, Times-Roman for Latin/digit runs.
+  // Font: NotoSansArabic for Arabic chars, Times-Roman for Latin/digit.
   //
-  // Vertical alignment: use `alignTop: false` (the default) so the
-  // Latin-baseline yOffset is APPLIED. This shifts the Latin/digit runs
-  // DOWN by (arabicLineH - latinLineH), aligning their baseline with
-  // the Arabic baseline. Without this, Arabic text (which has a larger
-  // ascent) sits visually LOWER than the digits — exactly the "raise
-  // the Arabic words to the level of the numbers" complaint.
-  //
-  // Centering uses the Arabic line height (the tallest line box) so the
-  // combined line stays vertically centered within rowH.
+  // Vertical alignment: Latin chars are shifted DOWN by yOffset to
+  // align their baseline with the Arabic baseline, so all chars sit
+  // at the same visual level. Centering uses the Arabic line height.
 
   doc.font(fontArReg).fontSize(durFontSize);
   const centeringLineH = doc.heightOfString("م");
   const yCell = currentY + (rowH - centeringLineH) / 2;
 
-  drawMixedText(durationAr, startX + col1W + subColW + 10, yCell, {
+  drawMixedTextCharByChar(durationAr, startX + col1W + subColW + 10, yCell, {
     width: subColW - 20,
     align: "center",
     fontSize: durFontSize,
     color: "#ffffff",
     weight: "regular",
-    alignTop: false,   // <-- apply yOffset to align Latin baseline with Arabic
-    preShaped: false,  // <-- logical-order text; let PDFKit do BiDi + rtla shaping
   });
 
   doc.restore();
