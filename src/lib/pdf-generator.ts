@@ -1640,16 +1640,41 @@ export async function generateSickLeavePDF(
       // the Arabic. drawMixedTextCharByChar handles the per-char Arabic/
       // Latin split + baseline offset + Arabic pre-shaping.
       //
-      // Logical input format (digits first, Arabic label last):
-      //     `${licNum} : رقم الترخيص`
+      // Logical input format (Arabic label first, colon, then digits):
+      //     `${LRM}رقم الترخيص : ${licNum}`
       //
-      // Why this order (digits first, Arabic label last):
-      //   drawMixedTextCharByChar walks the string LEFT-TO-RIGHT and emits
-      //   each char at increasing X positions, so visual LTR == logical
-      //   order. Putting the digits first puts them on the LEFT side of
-      //   the cell, and the Arabic label last puts it on the RIGHT side —
-      //   matching the bot's visual layout:
+      // Why this order (Arabic label first, digits last):
+      //   The user reported that the previous layout ("numbers before
+      //   text") was wrong and asked for the reading order to be:
+      //       text → colon → numbers
+      //   In Arabic RTL reading, "text first" means the text is on the
+      //   RIGHT (where RTL reading starts), and "numbers last" means the
+      //   numbers are on the LEFT. So the visual LTR layout must be:
       //       "1410101201200443 : رقم الترخيص"
+      //   (digits on the LEFT, colon in the middle, Arabic on the RIGHT)
+      //
+      //   bidi-js treats any paragraph starting with an Arabic char (or
+      //   a sequence whose first strong char is Arabic) as RTL base
+      //   direction. With RTL base, runs are placed right-to-left in
+      //   logical order, so:
+      //     - The Arabic run (first in logical) goes to the RIGHT side.
+      //     - The colon (next) goes to the MIDDLE.
+      //     - The digits run (last in logical) goes to the LEFT side.
+      //   This produces exactly the desired visual layout.
+      //
+      //   The LRM (U+200E) prefix is defensive: bidi-js's paragraph-level
+      //   detection appears to ignore it (both with and without LRM, the
+      //   visual output is identical), but keeping it makes the intent
+      //   explicit and protects against any future BiDi implementation
+      //   that might honor LRM as a base-direction hint. The LRM is
+      //   stripped automatically by drawMixedTextCharByChar (Cf char)
+      //   AFTER BiDi processing, so it never renders as tofu.
+      //
+      //   The PREVIOUS layout used `${licNum} : رقم الترخيص` (digits
+      //   first in logical), which produced the OPPOSITE visual:
+      //   Arabic on LEFT, digits on RIGHT — read in RTL as
+      //   "digits → colon → text" (numbers before text), which is what
+      //   the user objected to.
       //
       // Why char-by-char (not drawMixedText):
       //   PDFKit's internal BiDi + `features:["rtla"]` path works in local
@@ -1660,7 +1685,8 @@ export async function generateSickLeavePDF(
       //   arabic-reshaper) and renders each char as a separate doc.text()
       //   call with `features:[]`, bypassing both BiDi reversal and rtla
       //   GSUB — so the visual output is identical in every environment.
-      const fullLine = `${licNum} : رقم الترخيص`;
+      const LRM_LIC = "\u200e";
+      const fullLine = `${LRM_LIC}رقم الترخيص : ${licNum}`;
 
       drawMixedTextCharByChar(fullLine, rightCenterX - 125, footerY + 165, {
         width: 250,
