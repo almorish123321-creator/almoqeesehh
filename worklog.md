@@ -3015,3 +3015,37 @@ Stage Summary:
 - Strategy unified: BOTH cell #2 (duration) and the footer license line now use drawMixedTextCharByChar — the only rendering path that is provably environment-independent.
 - drawMixedText is still in the file but no longer used by any active code path; it can be removed later if confirmed unused.
 - The key insight: relying on PDFKit's `features:["rtla"]` GSUB pass for Arabic shaping is NOT reliable across deployment environments. Pre-shaping via arabic-reshaper + char-by-char rendering with `features:[]` is the only approach that works everywhere.
+
+---
+Task ID: PDF-DURATION-FIX-7
+Agent: main (Super Z)
+Task: Fix production-only disconnected Arabic letters in duration cell (user reported "كلمة يوم ملخبط")
+
+Work Log:
+- User uploaded screenshot showing production PDF with Arabic word "يوم" rendered as DISCONNECTED individual glyphs (ي و م) instead of cursively joined letters. Same code path worked locally but failed on Vercel.
+- Diagnosis: previous fix used `arabicReshaper.convertArabic()` for pre-shaping inside drawMixedTextCharByChar, then rendered each char individually with features:[]. The combination of pre-shaping-only (no BiDi) + per-char rendering is fragile across environments because:
+  - arabicReshaper.convertArabic may substitute presentation forms differently in different runtime contexts
+  - Without BiDi processing, parentheses/dates can also be misplaced
+  - The bot's original approach is more robust
+
+- Root-cause fix: matched the Python bot's `safe_arabic_mixed` + `render_mixed_font_cell_v2` approach EXACTLY:
+  1. Apply `processArabicBiDi` (= arabic-reshaper + bidi-js) to the cleaned logical-order string. This produces a string in VISUAL order where:
+     - Arabic chars are in their presentation forms (initial/medial/final/isolated chosen based on cursive context)
+     - Whole string is reordered per Unicode BiDi so visual LTR on screen reads correctly
+     - Latin/digits/punctuation are in their correct visual positions
+  2. Render EACH CHARACTER as a separate doc.text() call with features:[]. A single char cannot be BiDi-reversed, so visual LTR == logical. No rtla GSUB pass means no opportunity for the pass to fail.
+
+- Also fixed Arabic pluralization to match the bot:
+  The Python bot's `calculate_duration` always uses 'يوم' (singular) regardless of count — it does NOT pluralize to 'يومان' or 'أيام'. Updated `getArabicDuration` to match: '3 يوم', '2 يوم', '1 يوم', etc.
+
+- Verification:
+  - Local test with user's exact data (3 يوم, 09-02-2026 → 11-02-2026): VLM confirms "3 يوم ( 09-02-2026 إلى 11-02-2026 )" — letters cursively connected, properly centered, no issues.
+  - Commit 88fc9c6 pushed to GitHub, auto-deployed to Vercel.
+  - Production test (https://almoqeesehh.vercel.app/api/generate-pdf): HTTP 200, 130383 bytes, 2.73s response time.
+  - Production VLM verification: Arabic word 'يوم' rendered with letters properly connected cursively — NO separated boxes, NO tofu, NO reversed letters. (Production uses DEMO_MODE=true so it shows '1 يوم ( 2025-01-01 إلى 2025-01-01 )' instead of user data, but the rendering path is identical.)
+
+Stage Summary:
+- Production-only defect FULLY RESOLVED: Arabic duration cell now renders cursively connected letters on Vercel serverless.
+- The KEY insight: `arabicReshaper.convertArabic()` alone is NOT enough — `processArabicBiDi` (= reshaper + bidi-js) must be applied for environment-independent rendering.
+- Pluralization bug also fixed: always 'يوم' (singular) to match the Python bot.
+- The fix is verifiably live in production at https://almoqeesehh.vercel.app
