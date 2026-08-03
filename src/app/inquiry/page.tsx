@@ -205,7 +205,6 @@ export default function InquiryPage() {
                 src="/assets/images/seha_logo.4dde29e5c4f38890ccf9787220bcc5be.svg"
                 alt="logo"
                 className="logo"
-                style={{ filter: "brightness(0) invert(1)" }}
               />
             </a>
             <div className="d-lg-none d-xl-none justify-content-end menu">
