@@ -675,19 +675,34 @@ export async function generateSickLeavePDF(
     const fontLatin = weight === "bold" ? fontEnBold : fontEnReg;
 
     // ------------------------------------------------------------
-    // Pre-shape the Arabic chars in the cleaned logical-order string.
-    // `arabicReshaper.convertArabic` walks the string and replaces
-    // basic Arabic codepoints (U+0600-U+06FF) with their presentation
-    // forms (U+FB50-U+FDFF, U+FE70-U+FEFF) based on each char's
-    // context (initial/medial/final/isolated). Latin chars are left
-    // untouched. The output is still in logical order — only the
-    // Arabic codepoints are substituted.
+    // CRITICAL FIX (matches the Python bot's `safe_arabic_mixed` +
+    // `render_mixed_font_cell_v2` exactly):
     //
-    // This MUST happen BEFORE the per-char rendering loop, because
-    // each char is rendered individually (PDFKit's rtla cannot shape
-    // single chars).
+    // 1. Apply `processArabicBiDi` (= arabic-reshaper + bidi-js) to
+    //    the cleaned logical-order string. This produces a string in
+    //    VISUAL order where:
+    //      - Arabic chars are in their presentation forms
+    //        (U+FB50-U+FDFF, U+FE70-U+FEFF), already chosen based on
+    //        cursive context (initial/medial/final/isolated).
+    //      - The whole string is reordered per Unicode BiDi so visual
+    //        LTR on screen reads correctly.
+    //      - Latin/digits/punctuation are in their correct visual
+    //        positions (PDFKit's BiDi is NOT needed and NOT applied
+    //        because each char is rendered individually — a single
+    //        char cannot be BiDi-reversed).
+    //
+    // 2. Render EACH CHARACTER as a separate doc.text() call with
+    //    `features:[]` (no rtla — chars are already in presentation
+    //    form, applying rtla would try to re-shape single chars and
+    //    either fail or produce isolated forms). This mirrors the
+    //    bot's `for char in text: self.write(height, char)`.
+    //
+    // This approach is environment-independent: it does NOT rely on
+    // PDFKit's internal BiDi or `features:["rtla"]` GSUB pass, both
+    // of which have been observed to fail in serverless deployments
+    // (Vercel), producing disconnected/reversed Arabic glyphs.
     // ------------------------------------------------------------
-    const shapedText = arabicReshaper.convertArabic(cleanedText);
+    const shapedText = processArabicBiDi(cleanedText);
 
     // Classify chars: Arabic (incl. presentation forms) vs Latin/digit/punct
     // Arabic ranges: U+0600-U+06FF, U+0750-U+077F, U+FB50-U+FDFF, U+FE70-U+FEFF
@@ -1197,11 +1212,10 @@ export async function generateSickLeavePDF(
   const endDateFormatted = formatDateOnly(patient.date_to);
 
   const getArabicDuration = (count: number | string): string => {
+    // Match the Python bot's `calculate_duration` exactly — always uses
+    // "يوم" (singular) regardless of count. The bot does NOT pluralize
+    // to "يومان" or "أيام" — it always emits "{days} يوم (...)".
     const c = parseInt(String(count)) || 0;
-    if (c === 0) return "0 يوم";
-    if (c === 1) return "1 يوم";
-    if (c === 2) return "2 يومان";
-    if (c >= 3 && c <= 10) return `${c} أيام`;
     return `${c} يوم`;
   };
 
@@ -1212,12 +1226,12 @@ export async function generateSickLeavePDF(
   // `calculate_duration` (line 218):
   //     f"{days} يوم ( {LRM}{start}{LRM} إلى {LRM}{end}{LRM} )"
   //
-  // We pass the raw logical string to drawMixedText WITHOUT pre-shaping.
-  // PDFKit's `features: ["rtla"]` (applied automatically when `preShaped`
-  // is not set) handles BiDi + shaping natively for each Arabic run.
+  // We pass the raw logical string to drawMixedTextCharByChar, which
+  // processes it via processArabicBiDi (arabic-reshaper + bidi-js) and
+  // then renders it char-by-char with features:[] — environment-independent.
   //
   // Visual result on screen (left → right):
-  //     "2 يوم ( 09-06-2026 إلى 10-06-2026 )"
+  //     "3 يوم ( 09-02-2026 إلى 11-02-2026 )"
   const LRM = "\u200e";
   const durationArLogical =
     `${patient.day_count || 1} يوم ( ${LRM}${startDateFormatted}${LRM} إلى ${LRM}${endDateFormatted}${LRM} )`;
