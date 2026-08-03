@@ -51,6 +51,12 @@ export interface ApiPayload {
 /**
  * Build the API payload from the form data — kept compatible with the
  * existing entry page (/) that POSTs the same JSON shape.
+ *
+ * If the client provides `filled.leave_id` (the unified leave id captured
+ * at click time), use it verbatim — this guarantees the PDF embeds the
+ * SAME leave id that /api/upload-leave stores to the DB. Without this,
+ * each route calls generateLeaveId() independently (Math.random +
+ * Date.now) and produces DIFFERENT ids, breaking /inquiry lookups.
  */
 export function buildApiPayload(data: LeaveFormData): ApiPayload {
   const filled: LeaveFormData = { ...DEFAULTS, ...data } as LeaveFormData;
@@ -63,12 +69,17 @@ export function buildApiPayload(data: LeaveFormData): ApiPayload {
     filled.hospital_type = "public";
   }
 
-  const leaveNumber = generateLeaveId(
-    filled.id_number,
-    filled.admission_date_gregorian,
-    filled.discharge_date_gregorian,
-    filled.hospital_type,
-  );
+  // Use the client-provided leave_id if present; otherwise fall back to
+  // generating one server-side (legacy behaviour for old payloads).
+  const leaveNumber =
+    filled.leave_id && filled.leave_id.trim()
+      ? filled.leave_id.trim()
+      : generateLeaveId(
+          filled.id_number,
+          filled.admission_date_gregorian,
+          filled.discharge_date_gregorian,
+          filled.hospital_type,
+        );
   const dayCount = calculateDays(
     filled.admission_date_gregorian,
     filled.discharge_date_gregorian,

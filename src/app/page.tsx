@@ -361,11 +361,26 @@ export default function Home() {
     }
     setAction({ pdf: "loading", upload: "loading" });
 
+    // التقط رمز الإجازة الحالي من المعاينة مرة واحدة فقط، ثم أرسله
+    // إلى كلا المسارين /api/generate-pdf و /api/upload-leave لضمان أن
+    // ملف PDF وقاعدة البيانات يستخدمان نفس الرمز بالضبط.
+    //
+    // دون هذا، كل مسار يستدعي generateLeaveId() بشكل مستقل (مع
+    // Math.random() + Date.now()) فيُنتج رمزاً مختلفاً، فيعرض PDF
+    // رمزاً وتخزّن DB رمزاً آخر — فلا يجد /inquiry السجل أبداً.
+    const capturedLeaveId = computed.leaveId;
+
     const pdfPromise = (async () => {
       try {
-        // أرسل بيانات النموذج + الشعار المرفوع (إن وُجد) إلى API توليد PDF
-        // Send form data + uploaded logo (if any) to the PDF generation API
-        const payload = { ...formData, hospital_logo: hospitalLogo || "" };
+        // أرسل بيانات النموذج + الشعار المرفوع (إن وُجد) + رمز الإجازة
+        // الموحَّد إلى API توليد PDF
+        // Send form data + uploaded logo (if any) + unified leave id to the
+        // PDF generation API so the PDF embeds the same code saved to DB.
+        const payload = {
+          ...formData,
+          hospital_logo: hospitalLogo || "",
+          leave_id: capturedLeaveId,
+        };
         const resp = await fetch("/api/generate-pdf", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -392,7 +407,7 @@ export default function Home() {
         const resp = await fetch("/api/upload-leave", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(formData),
+          body: JSON.stringify({ ...formData, leave_id: capturedLeaveId }),
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok || !data.success) {

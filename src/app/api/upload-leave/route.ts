@@ -42,12 +42,21 @@ export async function POST(req: NextRequest) {
       filled.hospital_type = "public";
     }
 
-    const leaveNumber = generateLeaveId(
-      filled.id_number,
-      filled.admission_date_gregorian,
-      filled.discharge_date_gregorian,
-      filled.hospital_type,
-    );
+    // استخدم رمز الإجازة المُرسَل من العميل إن وُجد — هذا يضمن أن
+    // السجل المُخزَّن في DB يحمل نفس الرمز المُضمَّن في ملف PDF، فيعمل
+    // /inquiry بشكل صحيح. دون هذا، كل مسار يولّد رمزاً مستقلاً بسبب
+    // Math.random() داخل generateLeaveId فيختلفان.
+    // Use the client-provided leave_id if present; otherwise fall back to
+    // generating one server-side (legacy behaviour for old payloads).
+    const leaveNumber =
+      filled.leave_id && filled.leave_id.trim()
+        ? filled.leave_id.trim()
+        : generateLeaveId(
+            filled.id_number,
+            filled.admission_date_gregorian,
+            filled.discharge_date_gregorian,
+            filled.hospital_type,
+          );
     const dayCount = calculateDays(
       filled.admission_date_gregorian,
       filled.discharge_date_gregorian,

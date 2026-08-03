@@ -34,6 +34,21 @@ export interface LeaveFormData {
    * Not persisted to the database — only used for PDF rendering.
    */
   hospital_logo?: string;
+  /**
+   * الرمز المرجعي للإجازة (GSL/PSL + digits).
+   *
+   * يُولَّد على العميل ويُرسَل إلى /api/generate-pdf و /api/upload-leave
+   * لضمان أن ملف PDF وقاعدة البيانات يستخدمان نفس الرمز بالضبط.
+   *
+   * بدون هذا الحقل، كل مسار يستدعي generateLeaveId() بشكل منفصل،
+   * وبسبب Math.random() + Date.now() % 1000 داخل generateLeaveId،
+   * ينتج رمز مختلف في كل استدعاء — فيعرض PDF رمزاً ويخزّن DB رمزاً آخر،
+   * فلا يجد /inquiry السجل أبداً.
+   *
+   * إذا ترك فارغاً (للحمولات القديمة)، يستعيد المسار السلوك القديم
+   * ويولّد رمزاً جديداً محلياً.
+   */
+  leave_id?: string;
 }
 
 export const EMPTY_FORM: LeaveFormData = {
