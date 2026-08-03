@@ -3079,3 +3079,31 @@ Stage Summary:
 - Arabic words "يوم" and "إلى" rendered in Amiri (calligraphic Naskh); digits and parentheses use Amiri-Latin.
 - Latin digits in cell 2 baseline-aligned with Latin digits in cell 1.
 - Production deployment verified at https://almoqeesehh.vercel.app
+
+---
+Task ID: PDF-DURATION-FIX-9
+Agent: main (Super Z)
+Task: Cell 1 (English duration) uses same formatting/size/level as cell 2; fix date format reversal
+
+Work Log:
+- User requested: cell 1 (English duration) should have the same font, size, and vertical level as cell 2 (Arabic duration).
+- Also discovered: dates in cell 2 were rendering as YYYY-MM-DD (e.g., 2026-02-09) instead of DD-MM-YYYY (09-02-2026) due to BiDi reversing digit runs.
+
+Changes:
+1. Cell 1 now uses Amiri-Latin font (fontAmiriLatinRegPath) instead of Times-Roman, matching cell 2's Latin/digit portion. Vertical centering uses `latinLineH` measured from Amiri-Latin, so cell 1's digits sit at the exact same Y baseline as cell 2's digits.
+2. Fixed date reversal: previously LRM marks (U+200E) were stripped BEFORE processArabicBiDi, causing bidi-js to reverse digit runs within dates. Now LRM marks are preserved during BiDi processing and stripped AFTER, so dates stay in DD-MM-YYYY format visually. This matches the Python bot's safe_arabic_mixed (reshape+bidi with LRM marks intact) + render_mixed_font_cell_v2 (strips Cf chars after).
+
+Verification:
+- Local (user's exact data 3 يوم, 09-02-2026 → 11-02-2026):
+  - Cell 1: "3 day (09-02-2026 to 11-02-2026)"
+  - Cell 2: "3 يوم ( 09-02-2026 إلى 11-02-2026 )"
+  - Dates in DD-MM-YYYY format in both cells ✓
+  - Digits at same vertical level, same Amiri-Latin font, same size ✓
+  - Arabic words يوم and إلى connected cursively in Amiri font ✓
+- Commit a21ab88 pushed, auto-deployed to Vercel.
+- Production VLM verification (DEMO data): all checks passed — same font, same size, same level, dates in DD-MM-YYYY, Arabic letters connected cursively in Amiri font.
+
+Stage Summary:
+- Cell 1 (English) and cell 2 (Arabic) now share identical typographic formatting: Amiri font family, size 13, same Y baseline.
+- Date format bug fixed: dates now display as DD-MM-YYYY visually in both cells.
+- Production deployment verified at https://almoqeesehh.vercel.app
