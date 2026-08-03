@@ -3049,3 +3049,33 @@ Stage Summary:
 - The KEY insight: `arabicReshaper.convertArabic()` alone is NOT enough — `processArabicBiDi` (= reshaper + bidi-js) must be applied for environment-independent rendering.
 - Pluralization bug also fixed: always 'يوم' (singular) to match the Python bot.
 - The fix is verifiably live in production at https://almoqeesehh.vercel.app
+
+---
+Task ID: PDF-DURATION-FIX-8
+Agent: main (Super Z)
+Task: Lift cell 2 text to align with cell 1 + use Amiri font for Arabic words يوم/إلى
+
+Work Log:
+- User requested: (1) lift cell 2 (Arabic duration) text to the same vertical level as cell 1 (English duration); (2) use Amiri font for the Arabic words "يوم" and "إلى".
+
+- Diagnosis:
+  - Cell 1 vertical centering uses `latinLineH` (Times-Roman height).
+  - Cell 2 was centering using `max(arabicLineH, latinLineH) = arabicLineH` (taller). This placed cell 2's Latin digits LOWER than cell 1's digits.
+  - Amiri font files were already loaded (fontAmiriArabicReg/Bold, fontAmiriLatinReg/Bold), but only drawMixedText used them — drawMixedTextCharByChar did not.
+
+- Fix (two additive options to drawMixedTextCharByChar):
+  1. `useAmiri: true` — when true, render Arabic chars with Amiri-Arabic and Latin chars with Amiri-Latin. Mirrors drawMixedText's existing useAmiri logic.
+  2. `alignWithSibling: true` — when true (with centerVertically + cellHeight), center the block around `latinLineH` (NOT the taller arabicLineH), and render Arabic chars UP by yOffset so their baselines align with the Latin baseline. This makes cell 2's digits sit at the SAME Y as cell 1's digits.
+
+- Updated the cell 2 caller to pass both: `alignWithSibling: true, useAmiri: true`.
+
+- Verification:
+  - Local: VLM confirms cell 1 text "3 day (09-02-2026 to 11-02-2026)" and cell 2 text "3 يوم ( 09-02-2026 إلى 11-02-2026 )" — digits aligned at same vertical level, Amiri font for يوم and إلى, letters cursively connected.
+  - Commit ba3d144 pushed to GitHub, auto-deployed to Vercel.
+  - Production VLM verification: digits aligned ✓, Amiri font confirmed (calligraphic Naskh style with distinct horizontal strokes on final Meem) ✓, cursive connection ✓, horizontal centering ✓. (Production shows DEMO data "1 يوم" but the rendering path is identical.)
+
+Stage Summary:
+- Cell 2 Arabic duration text now sits at the same vertical level as cell 1 English duration text.
+- Arabic words "يوم" and "إلى" rendered in Amiri (calligraphic Naskh); digits and parentheses use Amiri-Latin.
+- Latin digits in cell 2 baseline-aligned with Latin digits in cell 1.
+- Production deployment verified at https://almoqeesehh.vercel.app
