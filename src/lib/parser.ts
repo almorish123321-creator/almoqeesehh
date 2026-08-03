@@ -213,9 +213,24 @@ function parseDateComponents(dateStr: string): { day: number; month: number; yea
 }
 
 /**
- * Generate a unique GSL leave ID, mirroring bot/api_client.py generate_leave_id.
+ * Generate a unique leave ID, mirroring bot/api_client.py generate_leave_id.
+ *
+ * The leave-ID prefix depends on the hospital type:
+ *   - "public"  (default) → GSL (General Sick Leave)  — للمستشفيات العامة
+ *   - "private"            → PSL (Private Sick Leave) — للمستشفيات الخاصة/الأهلية
+ *
+ * The numeric body is identical in both cases (derived from id_number +
+ * admission/discharge dates + a random/unique tail). Only the prefix differs.
  */
-export function generateLeaveId(idNumber: string, admission: string, discharge: string): string {
+export function generateLeaveId(
+  idNumber: string,
+  admission: string,
+  discharge: string,
+  hospitalType: "public" | "private" = "public",
+): string {
+  // Choose prefix based on hospital type. Default to GSL for backward
+  // compatibility (callers that don't pass hospitalType).
+  const prefix = hospitalType === "private" ? "PSL" : "GSL";
   try {
     const admissionNorm = normalizeDateToDDMMYYYY(admission);
     const dischargeNorm = normalizeDateToDDMMYYYY(discharge);
@@ -231,10 +246,10 @@ export function generateLeaveId(idNumber: string, admission: string, discharge: 
     const base = (dischargeNums + admissionNums + idPart).slice(0, 11).padEnd(11, "0");
     let leaveNumber = base.slice(0, 4) + uniquePart;
     leaveNumber = leaveNumber.slice(0, 11).padEnd(11, "0");
-    return `GSL${leaveNumber}`;
+    return `${prefix}${leaveNumber}`;
   } catch {
     const rand = String(Math.floor(10000000 + Math.random() * 89999999));
-    return `GSL260${rand}`;
+    return `${prefix}260${rand}`;
   }
 }
 

@@ -57,11 +57,17 @@ export function buildApiPayload(data: LeaveFormData): ApiPayload {
 
   if (!filled.id_number) filled.id_number = DEFAULTS.id_number;
   if (!filled.patient_name_ar) filled.patient_name_ar = DEFAULTS.patient_name_ar;
+  // Ensure hospital_type is set (default "public" for backward compat with
+  // payloads that don't include the field).
+  if (filled.hospital_type !== "public" && filled.hospital_type !== "private") {
+    filled.hospital_type = "public";
+  }
 
   const leaveNumber = generateLeaveId(
     filled.id_number,
     filled.admission_date_gregorian,
     filled.discharge_date_gregorian,
+    filled.hospital_type,
   );
   const dayCount = calculateDays(
     filled.admission_date_gregorian,

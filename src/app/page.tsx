@@ -85,6 +85,10 @@ const INITIAL_ACTION: ActionState = { pdf: "idle", upload: "idle" };
 //  Utility: convert a database record back into form data
 // =================================================================
 function recordToForm(r: any): LeaveFormData {
+  // Infer hospital_type from the saved gsl_code prefix (GSL → public,
+  // PSL → private). Falls back to "public" for legacy records.
+  const code: string = r.gslCode || r.gsl_code || "";
+  const inferredType: "public" | "private" = code.startsWith("PSL") ? "private" : "public";
   return {
     patient_name_ar: r.nameAr || "",
     patient_name_en: r.nameEn || "",
@@ -103,6 +107,7 @@ function recordToForm(r: any): LeaveFormData {
     hospital_name_en: r.hospitalNameEn || "",
     license_number: r.licenseNumber || "",
     time: toTimeInputValue(r.timeFrom) || r.timeFrom || "",
+    hospital_type: inferredType,
   };
 }
 
@@ -184,7 +189,7 @@ export default function Home() {
 
   // --- Field update ---
   const updateField = (key: keyof LeaveFormData, value: string) => {
-    setFormData((prev) => ({ ...prev, [key]: value }));
+    setFormData((prev) => ({ ...prev, [key]: value }) as LeaveFormData);
   };
 
   // --- Smart Paste ---
@@ -323,9 +328,18 @@ export default function Home() {
       formData.admission_date_gregorian && formData.discharge_date_gregorian
         ? calculateDays(formData.admission_date_gregorian, formData.discharge_date_gregorian)
         : 0;
+    // Pass hospital_type to generateLeaveId so the prefix is GSL (public)
+    // or PSL (private). Defaults to "public" if the field is somehow unset.
+    const hospitalType: "public" | "private" =
+      formData.hospital_type === "private" ? "private" : "public";
     const leaveId =
       formData.id_number && formData.admission_date_gregorian && formData.discharge_date_gregorian
-        ? generateLeaveId(formData.id_number, formData.admission_date_gregorian, formData.discharge_date_gregorian)
+        ? generateLeaveId(
+            formData.id_number,
+            formData.admission_date_gregorian,
+            formData.discharge_date_gregorian,
+            hospitalType,
+          )
         : "—";
     return { admissionDisp, dischargeDisp, days, leaveId, timeDisp: toTimeDisplay(formData.time) };
   }, [formData]);
@@ -784,6 +798,56 @@ export default function Home() {
                   <SummaryTile label="تاريخ الخروج" value={computed.dischargeDisp || "—"} />
                 </div>
 
+                {/* ===== نوع المنشأة الصحية =====
+                    يحدد بادئة رمز الإجازة:
+                      - مشفى عام       → GSL
+                      - مشفى خاص/أهلي  → PSL
+                    الاختيار ينعكس فوراً على "رمز الإجازة" المعروض في الأعلى. */}
+                <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-4">
+                  <div className="flex flex-wrap items-center gap-4">
+                    <div className="flex-1 min-w-[220px]">
+                      <Label className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+                        <span aria-hidden>🏥</span>
+                        نوع المنشأة الصحية
+                      </Label>
+                      <p className="text-xs text-slate-500 mt-1">
+                        يُحدد بادئة رمز الإجازة: <span className="font-mono font-semibold text-[#2c3e77]">GSL</span> للمشفى العام،{" "}
+                        <span className="font-mono font-semibold text-[#2c3e77]">PSL</span> للمشفى الخاص/الأهلي.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => updateField("hospital_type", "public")}
+                        disabled={isBusy}
+                        aria-pressed={formData.hospital_type !== "private"}
+                        className={`px-4 py-2 rounded-md text-sm font-semibold border transition-colors disabled:opacity-50 ${
+                          formData.hospital_type !== "private"
+                            ? "bg-[#306db5] text-white border-[#306db5] shadow-sm"
+                            : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+                        }`}
+                      >
+                        🏥 مشفى عام
+                        <span className="mr-1 text-[10px] font-mono opacity-75">(GSL)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updateField("hospital_type", "private")}
+                        disabled={isBusy}
+                        aria-pressed={formData.hospital_type === "private"}
+                        className={`px-4 py-2 rounded-md text-sm font-semibold border transition-colors disabled:opacity-50 ${
+                          formData.hospital_type === "private"
+                            ? "bg-[#306db5] text-white border-[#306db5] shadow-sm"
+                            : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+                        }`}
+                      >
+                        🏥 مشفى خاص
+                        <span className="mr-1 text-[10px] font-mono opacity-75">(PSL)</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
                 {(["patient", "leave", "doctor", "hospital"] as const).map((groupKey) => (
                   <section key={groupKey} className="space-y-3">
                     <div className="flex items-center gap-2">
@@ -797,7 +861,7 @@ export default function Home() {
                         <FieldInput
                           key={field.key}
                           field={field}
-                          value={formData[field.key]}
+                          value={(formData[field.key] as string) ?? ""}
                           onChange={(v) => updateField(field.key, v)}
                           disabled={isBusy}
                         />

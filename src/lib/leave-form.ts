@@ -22,6 +22,13 @@ export interface LeaveFormData {
   license_number: string;
   time: string;
   /**
+   * نوع المنشأة الصحية:
+   *   - "public"  → مشفى عام      → رمز الإجازة يبدأ بـ GSL
+   *   - "private" → مشفى خاص/أهلي → رمز الإجازة يبدأ بـ PSL
+   * افتراضي: "public" (لم backward-compat مع السجلات القديمة التي لا تحتوي على الحقل).
+   */
+  hospital_type?: "public" | "private";
+  /**
    * Optional hospital/facility logo to embed in the PDF.
    * Stored as a base64 data URL (e.g. "data:image/png;base64,...").
    * Not persisted to the database — only used for PDF rendering.
@@ -47,6 +54,7 @@ export const EMPTY_FORM: LeaveFormData = {
   hospital_name_en: "",
   license_number: "",
   time: "",
+  hospital_type: "public",
   hospital_logo: "",
 };
 
@@ -68,6 +76,7 @@ export const DEFAULTS: LeaveFormData = {
   hospital_name_en: "General Hospital",
   license_number: "",
   time: "12:00 PM",
+  hospital_type: "public",
   hospital_logo: "",
 };
 
