@@ -664,9 +664,28 @@ export async function generateSickLeavePDF(
       return;
     }
 
-    // Strip Cf chars
+    // ------------------------------------------------------------
+    // Strip Cf chars (LRM, RLM, ZWJ, etc.) AFTER BiDi processing.
+    //
+    // IMPORTANT: We must NOT strip LRM (U+200E) BEFORE processArabicBiDi
+    // because the LRM marks are essential for the BiDi algorithm to
+    // preserve LTR runs (like dates "09-02-2026") within an RTL context.
+    // If we strip them before BiDi, the algorithm reverses the digit
+    // runs too, producing "2026-02-09" instead of "09-02-2026".
+    //
+    // So the order is:
+    //   1. Apply processArabicBiDi to the raw logical text (WITH LRM marks)
+    //      → produces visual-order string with LRM marks still embedded.
+    //   2. Strip Cf chars (including LRM) from the visual string.
+    //   3. Render each char individually with features:[].
+    //
+    // This mirrors the Python bot's safe_arabic_mixed + render_mixed_font_cell_v2:
+    //   - safe_arabic_mixed: reshape + bidi (keeps LRM marks)
+    //   - render_mixed_font_cell_v2: strips Cf chars via unicodedata.category != 'Cf'
+    //     THEN renders each char with self.write()
+    // ------------------------------------------------------------
     const CF_REGEX = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g;
-    const cleanedText = String(text).replace(CF_REGEX, "");
+    const rawText = String(text);
 
     const fontSize = options.fontSize || 12;
     const color = options.color || "#000000";
@@ -715,7 +734,17 @@ export async function generateSickLeavePDF(
     // of which have been observed to fail in serverless deployments
     // (Vercel), producing disconnected/reversed Arabic glyphs.
     // ------------------------------------------------------------
-    const shapedText = processArabicBiDi(cleanedText);
+    // Step 1: Apply processArabicBiDi to the raw logical text WITH LRM
+    // marks intact. The LRM marks (U+200E) are essential for BiDi to
+    // preserve LTR runs (dates, numbers) within the RTL Arabic context.
+    // The result is a visual-order string with Arabic chars in their
+    // presentation forms (initial/medial/final/isolated).
+    const visualText = processArabicBiDi(rawText);
+
+    // Step 2: Strip Cf chars (LRM, RLM, ZWJ, etc.) from the visual
+    // string. These marks guided BiDi but have no visual glyph — if
+    // left in, they'd render as tofu boxes with Latin fonts.
+    const shapedText = visualText.replace(CF_REGEX, "");
 
     // Classify chars: Arabic (incl. presentation forms) vs Latin/digit/punct
     // Arabic ranges: U+0600-U+06FF, U+0750-U+077F, U+FB50-U+FDFF, U+FE70-U+FEFF
@@ -1339,16 +1368,22 @@ export async function generateSickLeavePDF(
   // Arabic) — see set_cell_font_and_color line 533 and render_mixed_font_cell_v2
   // line 502/504. We previously used durFontSize-1 (=12) for values, which
   // made the duration values smaller than the labels. Now matching bot: 13.
-  doc.font(fontEnReg).fontSize(durFontSize);
-  const durValH1 = doc.heightOfString(duration, { width: subColW - 20 });
-  const durValY1 = currentY + (rowH - durValH1) / 2;
+  //
+  // CELL 1 (English) is now rendered with the SAME font family as CELL 2's
+  // Latin/digit portion (Amiri-Latin) so the two cells share an identical
+  // typographic look. We also center cell 1 vertically around the SAME
+  // latinLineH that cell 2 uses (via alignWithSibling), guaranteeing the
+  // two cells' digits sit at the exact same Y baseline.
+  const fontCell1Latin = amiriAvailable ? fontAmiriLatinRegPath : fontEnReg;
+  doc.font(fontCell1Latin).fontSize(durFontSize);
+  const cell1LineH = doc.heightOfString("0", { width: subColW - 20 });
+  const durValY1 = currentY + (rowH - cell1LineH) / 2;
 
-  drawTextEn(duration, startX + col1W + 10, durValY1, {
+  doc.font(fontCell1Latin).fontSize(durFontSize).fillColor("#ffffff");
+  doc.text(duration, startX + col1W + 10, durValY1, {
     width: subColW - 20,
     align: "center",
-    fontSize: durFontSize,
-    color: "#ffffff",
-    weight: "regular",
+    lineBreak: false,
   });
 
   // Arabic duration — rendered via drawMixedTextCharByChar for maximum
