@@ -1583,10 +1583,11 @@ export async function generateSickLeavePDF(
     .fillColor("blue")
     .font(fontEnBold)
     .fontSize(9);
-  // الرابط أسفل الـ QR — يفتح صفحة الاستعلام ويُعبّئ رمز الخدمة تلقائياً
+  // الرابط أسفل الـ QR — النص المعروض هو الرابط الرسمي لمنصة صحة،
+  // لكن عند النقر عليه يفتح صفحة الاستعلام على موقعنا لتعبئة رمز الخدمة.
   const inquiryBaseUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://almoqeesehh.vercel.app";
   const inquiryLink = `${inquiryBaseUrl}/inquiry`;
-  doc.text("almoqeesehh.vercel.app/inquiry", leftCenterX - 110, footerY + 180, {
+  doc.text("www.seha.sa/#/inquiries/slenquiry", leftCenterX - 110, footerY + 180, {
     width: 250,
     align: "center",
     link: inquiryLink,
