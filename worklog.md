@@ -2862,3 +2862,54 @@ Stage Summary:
   - Arabic words are at the same vertical level as the digits and dates
 - The fix uses a fundamentally different rendering approach (char-by-char) to bypass PDFKit's unavoidable BiDi algorithm
 - Other Arabic cells (using drawTextAr) are unchanged and continue to work correctly
+
+---
+Task ID: PDF-DUR-FIX-4
+Agent: main (Super Z)
+Task: Revert duration cell to use drawMixedText with raw logical text + new centerVertically option (user spec)
+
+Work Log:
+- Re-read user spec: revert cell #2 (Arabic duration) from `drawMixedTextCharByChar` (char-by-char, pre-shaped) back to `drawMixedText` (run-by-run) with:
+  - Raw `durationArLogical` (NOT pre-shaped, NOT BiDi-processed)
+  - `features: ["rtla"]` applied natively by PDFKit (default when `preShaped` is false)
+  - Remove `alignTop: true` and `preShaped: true`
+  - New `centerVertically: true` option for perfect vertical centering inside the 45pt-tall row
+
+Changes made to /home/z/my-project/src/lib/pdf-generator.ts:
+
+1. `drawMixedText` (around lines 537-575) — added `centerVertically` + `cellHeight` support:
+   - When `centerVertically === true` AND `cellHeight > 0`:
+     - Compute blockH = max(arabicLineH, latinLineH)
+     - Shift yRender DOWN by (cellHeight - blockH) / 2 — centers the whole line block inside the cell
+   - `centerVertically: true` FORCES `alignTop` to false (alignTopEffective = false), so the Latin baseline-offset is applied and digits/dashes/parens share the Arabic baseline
+   - Updated the per-run rendering loop to use `yRender` instead of raw `y`
+
+2. Cell #2 call site (around lines 1278-1309) — switched from `drawMixedTextCharByChar` to `drawMixedText`:
+   - Input: `durationArLogical` (raw, with LRM marks; drawMixedText strips them)
+   - Options: `centerVertically: true`, `cellHeight: rowH` (= 45)
+   - Removed `alignTop: true` and `preShaped: true`
+   - Removed the manual `yCell = currentY + (rowH - centeringLineH) / 2` calculation — drawMixedText now does this internally via `centerVertically`
+   - Y parameter is now just `currentY` (top of the cell); drawMixedText applies the centering offset
+
+3. Cleanup (around lines 1172-1184):
+   - Removed unused `const durationAr = arabicReshaper.convertArabic(durationArLogical);`
+   - Updated the surrounding comment block to reflect the new strategy (raw logical + PDFKit native rtla)
+
+Verification (via VLM with full-page + tight crop):
+- Visual LTR order in Arabic duration cell: "2 يوم ( 09-06-2026 إلى 10-06-2026 )" ✓
+- Arabic word "يوم" displays with correct letter order (NOT reversed to "موي") ✓
+- Arabic word "إلى" displays with correct letter order (NOT reversed to "ىلإ") ✓
+- Arabic words share the same horizontal baseline as digits/dates ✓
+- Text block is vertically centered inside the 45pt-tall dark blue row ✓
+- No regressions in other cells (footer license line, Arabic labels, English text all render correctly) ✓
+- No tofu boxes, no overlapping text, no missing glyphs ✓
+
+Stage Summary:
+- User's spec implemented exactly as requested:
+  - drawMixedText now supports `centerVertically` + `cellHeight` for cell-aware vertical centering
+  - When `centerVertically: true`, `alignTop` is auto-disabled so Latin baseline-offset is applied
+- Cell #2 uses raw `durationArLogical` + PDFKit's native `rtla` (no pre-shaping, no char-by-char rendering)
+- Both prior complaints fully resolved:
+  - Arabic letters display in correct logical order (no BiDi double-reversal)
+  - Arabic words and Latin/digits share the same baseline (vertical centering applied to whole block)
+- Approach is simpler than the previous char-by-char workaround: relies on PDFKit's native BiDi + rtla shaping for each Arabic run, with `align: "left"` per-run placement computed by drawMixedText's run-width measurement.
