@@ -2913,3 +2913,42 @@ Stage Summary:
   - Arabic letters display in correct logical order (no BiDi double-reversal)
   - Arabic words and Latin/digits share the same baseline (vertical centering applied to whole block)
 - Approach is simpler than the previous char-by-char workaround: relies on PDFKit's native BiDi + rtla shaping for each Arabic run, with `align: "left"` per-run placement computed by drawMixedText's run-width measurement.
+
+---
+Task ID: PDF-DUR-FIX-5
+Agent: main (Super Z)
+Task: Fix footer license number rendering (reversed Arabic) — switch from processArabicBiDi + preShaped to raw text + native rtla
+
+Work Log:
+- User reported footer license line displays as `ص.يخزتلا م.ق.ر` (reversed/inverted Arabic) instead of `1410101201200443 : رقم الترخيص`.
+- Root cause: the footer code path used `processArabicBiDi("رقم الترخيص : " + licNum)` + `preShaped: true`. With `preShaped: true`, drawMixedText passed `features: []` to PDFKit (no rtla GSUB), so PDFKit could not properly shape + BiDi-order the pre-shaped Arabic presentation forms. The result was inverted glyphs.
+- Issue 1 (duration cell) was already correctly handled by the previous fix (Task PDF-DUR-FIX-4) — raw `durationArLogical` + `centerVertically: true`, with drawMixedText applying `features: ["rtla"]` to Arabic runs only and Times-Roman to Latin/digit runs.
+
+Changes made to /home/z/my-project/src/lib/pdf-generator.ts (footer license line, around lines 1492-1532):
+
+1. Removed the `processArabicBiDi(...)` call. Now passing the raw logical string directly:
+       const fullLine = `${licNum} : رقم الترخيص`;
+
+2. Removed `preShaped: true` from the drawMixedText options. With `preShaped` unset (default false), drawMixedText applies `features: ["rtla"]` to Arabic runs only — letting PDFKit natively shape + BiDi-order the Arabic letters within each run.
+
+3. Reordered the logical input to put digits first (`${licNum} : رقم الترخيص` instead of `رقم الترخيص : ${licNum}`). Reason: drawMixedText places runs LEFT-TO-RIGHT in input order at sequential X positions. Putting digits first puts them on the LEFT side of the cell; putting the Arabic label last puts it on the RIGHT side. This matches the bot's visual layout: `1410101201200443 : رقم الترخيص`.
+
+4. Updated the surrounding comment block to explain the new strategy (no pre-shaping, no processArabicBiDi, PDFKit native rtla handles BiDi per Arabic run).
+
+Verification (via VLM):
+- Footer license line: visual LTR is `1410101201200443 : رقم الترخيص` ✓
+  - Digits (1410101201200443) on LEFT, Arabic label (رقم الترخيص) on RIGHT ✓
+  - Arabic letters in correct order (NOT reversed to ص.يخزتلا م.ق.ر) ✓
+  - Digits and Arabic share the same horizontal baseline ✓
+- Duration cell (Issue 1, re-verified): visual LTR is `2 يوم ( 09-06-2026 إلى 10-06-2026 )` ✓
+  - يوم and إلى in correct letter order (NOT reversed) ✓
+  - Same baseline as digits/dates ✓
+  - Vertically centered in dark blue row ✓
+- Full-page regression check (all other Arabic labels): PASS — no tofu, no overlap, no reversed words ✓
+
+Stage Summary:
+- Both user-reported issues fully resolved:
+  - Footer license line: `1410101201200443 : رقم الترخيص` (Arabic no longer reversed)
+  - Duration cell: `2 يوم ( 09-06-2026 إلى 10-06-2026 )` (already fixed in prior task, re-verified)
+- Strategy unified: BOTH cell #2 (duration) and the footer license line now use the SAME approach — raw logical text + drawMixedText with default `preShaped: false`, letting PDFKit apply `features: ["rtla"]` to Arabic runs natively. The `processArabicBiDi` + `preShaped: true` path is no longer used by any caller.
+- The `processArabicBiDi` function itself is left in the file (unused) for now, in case future callers need it. It can be removed later if confirmed unused.

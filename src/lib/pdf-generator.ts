@@ -1495,17 +1495,29 @@ export async function generateSickLeavePDF(
       // Times-Bold on the same baseline as the Arabic. drawMixedText
       // handles the Arabic/Latin run splitting + baseline offset.
       //
-      // Bot format (matches Python source):
-      //     full_line = f"رقم الترخيص : {license_value}"
-      //     processed_line = self.safe_arabic_mixed(full_line)
-      // In RTL reading order: "رقم الترخيص : <number>" — Arabic label
-      // first (rightmost), then colon, then digits (leftmost).
+      // Bot format (logical order):
+      //     f"رقم الترخيص : {license_value}"
       //
-      // We use processArabicBiDi (port of the bot's safe_arabic_mixed) to
-      // convert the logical-order string into visual-order display text,
-      // then pass it to drawMixedText with preShaped:true so PDFKit does
-      // NOT try to re-shape the already-shaped Arabic chars.
-      const fullLine = processArabicBiDi(`رقم الترخيص : ${licNum}`);
+      // We pass the raw logical string `${licNum} : رقم الترخيص` directly
+      // to drawMixedText — NO processArabicBiDi, NO preShaped.
+      //
+      // Why this order (digits first, Arabic label last):
+      //   drawMixedText splits the string into Arabic runs (rendered with
+      //   NotoSansArabic + features:["rtla"]) and Latin runs (rendered with
+      //   Times-Bold), then places them LEFT-TO-RIGHT in input order at
+      //   sequential X positions. Putting the digits first puts them on
+      //   the LEFT side of the cell, and the Arabic label last puts it on
+      //   the RIGHT side — matching the bot's visual layout:
+      //       "1410101201200443 : رقم الترخيص"
+      //
+      // Why no processArabicBiDi:
+      //   processArabicBiDi + preShaped:true caused PDFKit to skip rtla
+      //   shaping, which produced reversed/inverted Arabic glyphs
+      //   ("ص.يخزتلا م.ق.ر" instead of "رقم الترخيص"). Passing the raw
+      //   string with default preShaped:false lets PDFKit apply rtla
+      //   natively to each Arabic run, producing correct shaping + RTL
+      //   ordering within each run.
+      const fullLine = `${licNum} : رقم الترخيص`;
 
       drawMixedText(fullLine, rightCenterX - 125, footerY + 165, {
         width: 250,
@@ -1513,7 +1525,9 @@ export async function generateSickLeavePDF(
         weight: "bold",
         fontSize: 12,
         color: "#000000",
-        preShaped: true, // post-BiDi presentation forms — do NOT apply rtla
+        // No preShaped, no processArabicBiDi.
+        // drawMixedText applies features:["rtla"] to Arabic runs only;
+        // Latin/digit runs are rendered with Times-Bold (no rtla).
       });
     }
   }
