@@ -3107,3 +3107,39 @@ Stage Summary:
 - Cell 1 (English) and cell 2 (Arabic) now share identical typographic formatting: Amiri font family, size 13, same Y baseline.
 - Date format bug fixed: dates now display as DD-MM-YYYY visually in both cells.
 - Production deployment verified at https://almoqeesehh.vercel.app
+
+---
+Task ID: PDF-LICENSE-ORDER
+Agent: main (super-z)
+Task: Fix license number line in PDF — user reported digits appear "before" the Arabic text; expected reading order is text → colon → numbers.
+
+Work Log:
+- Read /home/z/my-project/worklog.md to understand prior PDF/Arabic work.
+- Read /home/z/my-project/src/lib/pdf-generator.ts around the license number rendering (lines 1620–1690).
+- Identified the previous logical format: `${licNum} : رقم الترخيص` (digits first, Arabic label last).
+- Wrote /home/z/my-project/scripts/debug-license-bidi.mjs to inspect what processArabicBiDi produces for various input orderings (digits-first, arabic-first, with/without LRM, with LRE/RLE overrides).
+- Confirmed bidi-js output:
+  - OLD input `${licNum} : رقم الترخيص` → visual `Arabic : digits` (Arabic on LEFT, digits on RIGHT).
+  - NEW input `${LRM}رقم الترخيص : ${licNum}` → visual `digits : Arabic` (digits on LEFT, Arabic on RIGHT).
+  - LRM does NOT change bidi-js paragraph-level detection (both still RTL), but logical-order reversal DOES flip the visual layout.
+- Applied the fix in pdf-generator.ts: changed the fullLine string to `${LRM_LIC}رقم الترخيص : ${licNum}` and updated the surrounding comments to accurately describe the bidi-js behavior.
+- Wrote /home/z/my-project/scripts/test-license-order.mjs that imports generateSickLeavePDF with mock patient + hospital data (license_number="1410101201200443"), renders the PDF, converts to PNG via pdftoppm, and crops the license region via Pillow.
+- Ran the test script — PDF generated (136668 bytes), PNG cropped to /tmp/test-license-crop-big.png (upscaled 3x for OCR).
+- VLM verification (z-ai vision) on the cropped image:
+  - Leftmost element: digit "1" (digits on LEFT ✓)
+  - Rightmost element: Arabic letter "ر" (text on RIGHT ✓)
+  - Colon in the middle ✓
+  - Arabic letters properly cursive-connected (no garbled/tofu) ✓
+- Visual layout: `1410101201200443 : رقم الترخيص` (digits LEFT, Arabic RIGHT)
+  → In Arabic RTL reading: text → colon → numbers (exactly as the user requested).
+- Committed as PDF-LICENSE-ORDER and pushed to origin/main (commit 62ce55f).
+
+Stage Summary:
+- Changed one line in src/lib/pdf-generator.ts:
+    OLD: const fullLine = `${licNum} : رقم الترخيص`;
+    NEW: const LRM_LIC = "\u200e";
+         const fullLine = `${LRM_LIC}رقم الترخيص : ${licNum}`;
+- The leading LRM (U+200E) is kept as a defensive marker; the actual visual fix comes from reversing the logical order so the Arabic run is first.
+- bidi-js, under RTL base direction (set by the leading Arabic char), places the first Arabic run on the RIGHT and the trailing digits run on the LEFT — producing the desired visual layout.
+- Added two scripts (scripts/test-license-order.mjs, scripts/debug-license-bidi.mjs) for future regression testing.
+- VLM-verified visual output: digits on LEFT, colon in MIDDLE, Arabic text on RIGHT (which in RTL reading = text → colon → numbers, matching the user's request).
