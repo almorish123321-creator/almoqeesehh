@@ -610,28 +610,34 @@ export async function generateSickLeavePDF(
   // drawMixedTextCharByChar — renders mixed Arabic + Latin/digit text
   // by drawing EACH CHARACTER INDIVIDUALLY at sequential LTR positions.
   //
-  // Why this exists:
+  // Why this exists (and is now the PREFERRED path for any mixed
+  // Arabic+Latin text where reliable visual ordering matters):
   //   PDFKit ALWAYS applies its internal BiDi algorithm to any text
   //   containing Arabic-range characters (U+0600-U+06FF, U+FB50-U+FEFF).
   //   This BiDi pass REVERSES Arabic runs, so logical-order "يوم" gets
   //   visually reversed to "موي" on screen. There is no PDFKit option
-  //   to disable BiDi.
+  //   to disable BiDi. In some deployment environments (e.g. serverless
+  //   builds) the `features: ["rtla"]` GSUB pass also fails to apply
+  //   shaping, leaving Arabic letters in disconnected isolated forms.
   //
-  //   The only way to prevent BiDi reversal is to render each character
-  //   as a SEPARATE doc.text() call. A single character cannot be
-  //   reversed by BiDi (there's nothing to reverse). By positioning
-  //   each char explicitly at increasing X coordinates, we force the
-  //   visual LTR order to match the logical string order.
+  //   The only way to guarantee correct visual output across all
+  //   environments is to render each character as a SEPARATE doc.text()
+  //   call. A single character cannot be reversed by BiDi (there's
+  //   nothing to reverse). By positioning each char explicitly at
+  //   increasing X coordinates, we force the visual LTR order to match
+  //   the logical string order.
   //
-  // Input requirements:
-  //   - `text` must be PRE-SHAPED (Arabic chars already converted to
-  //     presentation forms via arabic-reshaper). This is critical
+  // Input handling (the function accepts RAW LOGICAL text):
+  //   - Arabic chars are pre-shaped INSIDE this function via
+  //     `arabicReshaper.convertArabic(...)`. Pre-shaping is critical
   //     because rendering each char individually means PDFKit's rtla
   //     GSUB feature cannot determine the correct form based on
   //     context (it only sees one char at a time). The pre-shaper
-  //     has already chosen initial/medial/final/isolated forms based
-  //     on the full string context.
-  //   - `text` should be in LOGICAL order (not BiDi-reversed).
+  //     chooses initial/medial/final/isolated forms based on the
+  //     full string context, preserving the cursive appearance.
+  //   - The input is in LOGICAL order (NOT BiDi-reversed). After
+  //     pre-shaping we walk the string left-to-right and emit each
+  //     char at increasing X positions, so visual LTR == logical.
   //
   // Rendering:
   //   - Strip Cf (format) chars (LRM, RLM, etc.) — same as drawMixedText.
@@ -643,6 +649,9 @@ export async function generateSickLeavePDF(
   //   - Apply Latin-baseline yOffset so Latin chars align with Arabic
   //     baseline (same as drawMixedText's alignTop:false behavior).
   //   - Center the whole line within `options.width`.
+  //   - When `centerVertically:true` + `cellHeight` are passed, the
+  //     whole line block is centered vertically inside the cell,
+  //     mirroring the bot's `self.write(height, char)` behavior.
   // ============================================================
   const drawMixedTextCharByChar = (
     text: string,
@@ -664,6 +673,21 @@ export async function generateSickLeavePDF(
     const weight = options.weight || "regular";
     const fontArabic = weight === "bold" ? fontArBold : fontArReg;
     const fontLatin = weight === "bold" ? fontEnBold : fontEnReg;
+
+    // ------------------------------------------------------------
+    // Pre-shape the Arabic chars in the cleaned logical-order string.
+    // `arabicReshaper.convertArabic` walks the string and replaces
+    // basic Arabic codepoints (U+0600-U+06FF) with their presentation
+    // forms (U+FB50-U+FDFF, U+FE70-U+FEFF) based on each char's
+    // context (initial/medial/final/isolated). Latin chars are left
+    // untouched. The output is still in logical order — only the
+    // Arabic codepoints are substituted.
+    //
+    // This MUST happen BEFORE the per-char rendering loop, because
+    // each char is rendered individually (PDFKit's rtla cannot shape
+    // single chars).
+    // ------------------------------------------------------------
+    const shapedText = arabicReshaper.convertArabic(cleanedText);
 
     // Classify chars: Arabic (incl. presentation forms) vs Latin/digit/punct
     // Arabic ranges: U+0600-U+06FF, U+0750-U+077F, U+FB50-U+FDFF, U+FE70-U+FEFF
@@ -691,7 +715,7 @@ export async function generateSickLeavePDF(
     const chars: CharPlan[] = [];
     let totalWidth = 0;
 
-    for (const ch of cleanedText) {
+    for (const ch of shapedText) {
       const isAr = isArabicChar(ch);
       if (isAr) {
         doc.font(fontArabic).fontSize(fontSize);
@@ -711,13 +735,28 @@ export async function generateSickLeavePDF(
       startX = x + options.width - totalWidth;
     }
 
+    // ------------------------------------------------------------
+    // Vertical centering inside a cell of known height. Mirrors
+    // drawMixedText's behavior: when `centerVertically:true` is set
+    // with a positive `cellHeight`, treat `y` as the TOP of the cell
+    // and shift the line block DOWN by (cellHeight - blockH) / 2 so
+    // the whole line is centered vertically.
+    // ------------------------------------------------------------
+    let yRender = y;
+    const centerVertically = options.centerVertically === true;
+    const cellHeight = typeof options.cellHeight === "number" ? options.cellHeight : 0;
+    if (centerVertically && cellHeight > 0) {
+      const blockH = Math.max(arabicLineH, latinLineH);
+      yRender = y + (cellHeight - blockH) / 2;
+    }
+
     // Render each char at its computed X position
     let curX = startX;
     for (const cp of chars) {
       if (cp.isArabic) {
         doc.font(fontArabic).fontSize(fontSize).fillColor(color);
         // features:[] = do NOT apply rtla (chars are already pre-shaped)
-        doc.text(cp.ch, curX, y, {
+        doc.text(cp.ch, curX, yRender, {
           features: [],
           align: "left",
           lineBreak: false,
@@ -725,7 +764,7 @@ export async function generateSickLeavePDF(
       } else {
         doc.font(fontLatin).fontSize(fontSize).fillColor(color);
         // Shift Latin chars DOWN by yOffset to align baselines
-        doc.text(cp.ch, curX, y + yOffset, {
+        doc.text(cp.ch, curX, yRender + yOffset, {
           align: "left",
           lineBreak: false,
         });
@@ -1254,30 +1293,38 @@ export async function generateSickLeavePDF(
     weight: "regular",
   });
 
-  // Arabic duration — rendered via drawMixedText with logical-order text
-  // and PDFKit's native `rtla` GSUB feature.
+  // Arabic duration — rendered via drawMixedTextCharByChar for maximum
+  // reliability across deployment environments.
   //
-  // Strategy (matches the Python/FPDF bot's mixed-font cell behavior):
+  // Why char-by-char (not drawMixedText):
+  //   PDFKit's internal BiDi + `features:["rtla"]` path works in local
+  //   tests but has been observed to FAIL in some serverless/production
+  //   environments, producing:
+  //     - Arabic letters in disconnected isolated forms (no cursive joining)
+  //     - BiDi-reversed Arabic runs ("يوم" → "موي")
+  //     - Garbled glyphs when the font fallback chain kicks in
+  //
+  //   drawMixedTextCharByChar bypasses these issues by:
+  //     1. Pre-shaping the Arabic inside the function (via arabic-reshaper)
+  //        → cursive joining is preserved even when each char is rendered
+  //        individually (PDFKit's rtla cannot shape single chars).
+  //     2. Rendering each char as a SEPARATE doc.text() call → a single
+  //        char cannot be BiDi-reversed, so visual LTR == logical order.
+  //     3. Using `features:[]` for Arabic chars → no rtla GSUB pass,
+  //        which means no opportunity for the GSUB pass to fail/misshape.
+  //
+  // Strategy:
   //   - Input: raw `durationArLogical` (NOT pre-shaped, NOT BiDi-processed).
   //     Arabic letters are in their basic Unicode form (U+0600-U+06FF).
-  //     The LRM (U+200E) marks are kept in the input — drawMixedText
-  //     strips them before rendering (they are BiDi control chars with
-  //     no visual glyph).
-  //   - drawMixedText splits the text into Arabic runs + Latin/digit runs.
-  //     Arabic runs are rendered with NotoSansArabic + `features: ["rtla"]`
-  //     so PDFKit applies its BiDi + shaping (initial/medial/final/isolated
-  //     forms) natively. Latin/digit runs are rendered with Times-Roman.
-  //   - We pass `centerVertically: true` + `cellHeight: rowH` so the whole
-  //     line block (Arabic + Latin) is centered vertically inside the
-  //     45pt-tall row, mirroring the bot's `self.write(height, char)`.
-  //   - We do NOT pass `alignTop: true` — `centerVertically: true` forces
-  //     `alignTop` to false, so the Latin baseline-offset is applied and
-  //     digits/dashes/parentheses share the Arabic baseline.
+  //     The LRM (U+200E) marks are stripped inside drawMixedTextCharByChar.
+  //   - `centerVertically: true` + `cellHeight: rowH` (45pt) centers the
+  //     whole line block vertically inside the dark blue row, mirroring
+  //     the bot's `self.write(height, char)` vertical distribution.
   //
   // Expected visual output (left → right):
-  //     "2 يوم ( 09-06-2026 إلى 10-06-2026 )"
+  //     "2 يوم ( 20-09-2025 إلى 21-09-2025 )"
 
-  drawMixedText(durationArLogical, startX + col1W + subColW + 10, currentY, {
+  drawMixedTextCharByChar(durationArLogical, startX + col1W + subColW + 10, currentY, {
     width: subColW - 20,
     align: "center",
     fontSize: durFontSize,
@@ -1490,44 +1537,40 @@ export async function generateSickLeavePDF(
     const licNum = emptyIndicators.has(rawLic.trim()) ? "" : rawLic.trim();
 
     if (licNum) {
-      // Render the full mixed line via drawMixedText. Noto Sans Arabic
-      // lacks ASCII digit glyphs (0-9), so digits must be rendered with
-      // Times-Bold on the same baseline as the Arabic. drawMixedText
-      // handles the Arabic/Latin run splitting + baseline offset.
+      // Render the full mixed line via drawMixedTextCharByChar for maximum
+      // reliability. Noto Sans Arabic lacks ASCII digit glyphs (0-9), so
+      // digits must be rendered with Times-Bold on the same baseline as
+      // the Arabic. drawMixedTextCharByChar handles the per-char Arabic/
+      // Latin split + baseline offset + Arabic pre-shaping.
       //
-      // Bot format (logical order):
-      //     f"رقم الترخيص : {license_value}"
-      //
-      // We pass the raw logical string `${licNum} : رقم الترخيص` directly
-      // to drawMixedText — NO processArabicBiDi, NO preShaped.
+      // Logical input format (digits first, Arabic label last):
+      //     `${licNum} : رقم الترخيص`
       //
       // Why this order (digits first, Arabic label last):
-      //   drawMixedText splits the string into Arabic runs (rendered with
-      //   NotoSansArabic + features:["rtla"]) and Latin runs (rendered with
-      //   Times-Bold), then places them LEFT-TO-RIGHT in input order at
-      //   sequential X positions. Putting the digits first puts them on
-      //   the LEFT side of the cell, and the Arabic label last puts it on
-      //   the RIGHT side — matching the bot's visual layout:
+      //   drawMixedTextCharByChar walks the string LEFT-TO-RIGHT and emits
+      //   each char at increasing X positions, so visual LTR == logical
+      //   order. Putting the digits first puts them on the LEFT side of
+      //   the cell, and the Arabic label last puts it on the RIGHT side —
+      //   matching the bot's visual layout:
       //       "1410101201200443 : رقم الترخيص"
       //
-      // Why no processArabicBiDi:
-      //   processArabicBiDi + preShaped:true caused PDFKit to skip rtla
-      //   shaping, which produced reversed/inverted Arabic glyphs
-      //   ("ص.يخزتلا م.ق.ر" instead of "رقم الترخيص"). Passing the raw
-      //   string with default preShaped:false lets PDFKit apply rtla
-      //   natively to each Arabic run, producing correct shaping + RTL
-      //   ordering within each run.
+      // Why char-by-char (not drawMixedText):
+      //   PDFKit's internal BiDi + `features:["rtla"]` path works in local
+      //   tests but has been observed to FAIL in some production
+      //   environments, producing garbled Arabic ("ص.يخزتلا م.ق.ر" instead
+      //   of "رقم الترخيص") when the rtla GSUB pass doesn't apply shaping.
+      //   drawMixedTextCharByChar pre-shapes the Arabic internally (via
+      //   arabic-reshaper) and renders each char as a separate doc.text()
+      //   call with `features:[]`, bypassing both BiDi reversal and rtla
+      //   GSUB — so the visual output is identical in every environment.
       const fullLine = `${licNum} : رقم الترخيص`;
 
-      drawMixedText(fullLine, rightCenterX - 125, footerY + 165, {
+      drawMixedTextCharByChar(fullLine, rightCenterX - 125, footerY + 165, {
         width: 250,
         align: "center",
         weight: "bold",
         fontSize: 12,
         color: "#000000",
-        // No preShaped, no processArabicBiDi.
-        // drawMixedText applies features:["rtla"] to Arabic runs only;
-        // Latin/digit runs are rendered with Times-Bold (no rtla).
       });
     }
   }
