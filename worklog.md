@@ -3193,3 +3193,36 @@ Stage Summary:
 - Commit 1458674 'feat: hospital type selector (GSL/PSL) + natural-color seha logo' pushed to origin/main.
 - Files changed: public/images/seha-color-logo.svg, src/lib/leave-form.ts, src/lib/parser.ts, src/app/api/generate-pdf/route.ts, src/app/api/upload-leave/route.ts, src/app/page.tsx (6 files, +114 -14).
 - Both features verified end-to-end via API tests + VLM visual verification.
+
+---
+Task ID: INQUIRY-LOGO-COLOR
+Agent: main
+Task: Remove the white color overlay on the Seha (صحة) logo in the top-right corner of /inquiry page; restore natural colors (blue checkmark + black text) per user's reference image شعارصحةseha.jpg
+
+Work Log:
+- Read /home/z/my-project/upload/شعارصحةseha.jpg via z-ai vision CLI to confirm expected colors:
+  * Checkmark = blue gradient (lighter at top, darker at bottom)
+  * Text = dark gray / charcoal black
+  * Vertical divider = light gray
+- Inspected the source SVG at /home/z/my-project/public/assets/images/seha_logo.4dde29e5c4f38890ccf9787220bcc5be.svg
+  → already contains correct natural colors:
+     - linear-gradient (#2c6bb7 → #7cb6dd) for the checkmark stripes
+     - #3a3a3a dark gray for the text paths
+     - #c5c6c8 light gray for the divider
+- Located the bug in /home/z/my-project/src/app/inquiry/page.tsx line 208:
+  the <img> had style={{ filter: "brightness(0) invert(1)" }} which forces
+  everything to pure white.
+- Confirmed header background (mo.css .header) is rgb(248,249,251) — light
+  grayish white, so natural-color logo will be visible.
+- Removed the inline filter on the header <img> only; left the footer
+  <img> filter intact (footer has dark-blue background, needs white logo).
+- Verified previous commit 1458674 ("natural-color seha logo") only touched
+  home page + /inquiries/slenquiry, NOT /inquiry — that is why the user
+  still saw a white logo at https://almoqeesehh.vercel.app/inquiry.
+
+Stage Summary:
+- Committed: eebbb4f "INQUIRY-LOGO-COLOR: remove white filter on /inquiry header logo"
+- Pushed to origin/main
+- Vercel will auto-deploy; user should hard-refresh /inquiry after deploy
+- Result: header logo now shows blue checkmark + black text matching the
+  reference image; footer logo unchanged (still white on dark background).
