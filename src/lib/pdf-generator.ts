@@ -671,8 +671,21 @@ export async function generateSickLeavePDF(
     const fontSize = options.fontSize || 12;
     const color = options.color || "#000000";
     const weight = options.weight || "regular";
-    const fontArabic = weight === "bold" ? fontArBold : fontArReg;
-    const fontLatin = weight === "bold" ? fontEnBold : fontEnReg;
+
+    // ------------------------------------------------------------
+    // Font selection — caller can pass `useAmiri: true` to render
+    // BOTH the Arabic and the Latin/digit portions with the Amiri
+    // font family (Amiri-Arabic for Arabic chars, Amiri-Latin for
+    // Latin/digits). Otherwise we fall back to the default Arabic
+    // font (Noto Sans Arabic) + Times-Roman.
+    // ------------------------------------------------------------
+    const useAmiri = options.useAmiri === true && amiriAvailable;
+    const fontArabic = useAmiri
+      ? (weight === "bold" ? fontAmiriArabicBoldPath : fontAmiriArabicRegPath)
+      : (weight === "bold" ? fontArBold : fontArReg);
+    const fontLatin = useAmiri
+      ? (weight === "bold" ? fontAmiriLatinBoldPath : fontAmiriLatinRegPath)
+      : (weight === "bold" ? fontEnBold : fontEnReg);
 
     // ------------------------------------------------------------
     // CRITICAL FIX (matches the Python bot's `safe_arabic_mixed` +
@@ -751,18 +764,47 @@ export async function generateSickLeavePDF(
     }
 
     // ------------------------------------------------------------
-    // Vertical centering inside a cell of known height. Mirrors
-    // drawMixedText's behavior: when `centerVertically:true` is set
-    // with a positive `cellHeight`, treat `y` as the TOP of the cell
-    // and shift the line block DOWN by (cellHeight - blockH) / 2 so
-    // the whole line is centered vertically.
+    // Vertical centering inside a cell of known height. Two modes:
+    //
+    // 1. Default (`centerVertically: true` + `cellHeight`):
+    //    Use `blockH = max(arabicLineH, latinLineH)` for centering.
+    //    Arabic chars render at `yRender`, Latin chars are pushed DOWN
+    //    by `yOffset = arabicLineH - latinLineH` so their baselines
+    //    align with the Arabic baseline. The visual block is centered
+    //    in the cell — works well when this is the ONLY cell with
+    //    mixed text.
+    //
+    // 2. `alignWithSibling: true` (used for cell 2 of row 2):
+    //    The adjacent sibling cell (cell 1) renders plain Latin text
+    //    with Times-Roman, centered around `latinLineH`. To make the
+    //    digit characters in BOTH cells sit at the SAME visual Y
+    //    (i.e. aligned baselines), we center THIS cell's block using
+    //    `blockH = latinLineH` (NOT the taller arabicLineH), and we
+    //    render Arabic chars HIGHER (at `yRender - yOffset`) so their
+    //    baseline still aligns with the Latin baseline.
+    //
+    //    Net effect: Latin digits in cell 2 align horizontally with
+    //    the digits in cell 1; the Arabic words "يوم" and "إلى" sit
+    //    visually centered on the same baseline (they extend slightly
+    //    higher because Arabic glyphs are taller, which is correct).
     // ------------------------------------------------------------
     let yRender = y;
+    let arabicYOffset = 0; // additional Y shift for Arabic chars
     const centerVertically = options.centerVertically === true;
+    const alignWithSibling = options.alignWithSibling === true;
     const cellHeight = typeof options.cellHeight === "number" ? options.cellHeight : 0;
     if (centerVertically && cellHeight > 0) {
-      const blockH = Math.max(arabicLineH, latinLineH);
-      yRender = y + (cellHeight - blockH) / 2;
+      if (alignWithSibling) {
+        // Center on Latin line height so digits align with sibling cell's digits.
+        // Render Arabic chars UP by yOffset to align baselines.
+        yRender = y + (cellHeight - latinLineH) / 2;
+        arabicYOffset = -yOffset; // negative because Arabic goes UP
+      } else {
+        // Default: center on max(arabic, latin) height, push Latin DOWN.
+        const blockH = Math.max(arabicLineH, latinLineH);
+        yRender = y + (cellHeight - blockH) / 2;
+        arabicYOffset = 0;
+      }
     }
 
     // Render each char at its computed X position
@@ -771,15 +813,17 @@ export async function generateSickLeavePDF(
       if (cp.isArabic) {
         doc.font(fontArabic).fontSize(fontSize).fillColor(color);
         // features:[] = do NOT apply rtla (chars are already pre-shaped)
-        doc.text(cp.ch, curX, yRender, {
+        doc.text(cp.ch, curX, yRender + arabicYOffset, {
           features: [],
           align: "left",
           lineBreak: false,
         });
       } else {
         doc.font(fontLatin).fontSize(fontSize).fillColor(color);
-        // Shift Latin chars DOWN by yOffset to align baselines
-        doc.text(cp.ch, curX, yRender + yOffset, {
+        // Shift Latin chars DOWN by yOffset to align baselines (default mode)
+        // or render at yRender (alignWithSibling mode — Latin is the anchor)
+        const latinY = alignWithSibling ? yRender : yRender + yOffset;
+        doc.text(cp.ch, curX, latinY, {
           align: "left",
           lineBreak: false,
         });
@@ -1346,6 +1390,10 @@ export async function generateSickLeavePDF(
     weight: "regular",
     centerVertically: true,
     cellHeight: rowH,
+    // Align cell 2's Latin digits with cell 1's digits (same baseline Y)
+    alignWithSibling: true,
+    // Use Amiri font family for Arabic words ("يوم", "إلى") and Latin digits
+    useAmiri: true,
   });
 
   doc.restore();
