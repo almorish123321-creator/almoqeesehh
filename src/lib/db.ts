@@ -125,7 +125,10 @@ async function readDemoStoreAsync(): Promise<DemoRecord[]> {
     );
     const latestById = new Map<string, (typeof blobs)[number]>();
     const supersededUrls: string[] = [];
-    const idRe = /^sick-leaves\/(\d+)\.json/;
+    // تنسيقات المسار الممكنة (SDK يُدرج اللاحقة العشوائية قبل الامتداد):
+    //  - sick-leaves/116.json            (كتابة قديمة بنفس المسار)
+    //  - sick-leaves/122-aLZH…99c.json   (كتابة فريدة addRandomSuffix: true)
+    const idRe = /^sick-leaves\/(\d+)(?:-[^.]+)?\.json/;
     for (const blob of sorted) {
       const m = idRe.exec(blob.pathname);
       if (!m) continue;
