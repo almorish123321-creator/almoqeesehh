@@ -73,7 +73,13 @@ export async function POST(req: NextRequest) {
 
     const entryDate = toISODate(normalizeDateToDDMMYYYY(filled.admission_date_gregorian));
     const exitDate = toISODate(normalizeDateToDDMMYYYY(filled.discharge_date_gregorian));
-    const issueDate = entryDate || new Date().toISOString().slice(0, 10);
+    // تاريخ الإصدار: استخدم القيمة المُرسَلة من العميل (نفسها المطبوعة في
+    // التقرير/الـ PDF) إن وُجدت — وليس تاريخ الدخول — حتى تطابق صفحة
+    // الاستعلام (تاريخ إصدار تقرير الإجازة) ما يظهر داخل التقرير فعلاً.
+    const issueDate =
+      toISODate(normalizeDateToDDMMYYYY(filled.issue_date || "")) ||
+      entryDate ||
+      new Date().toISOString().slice(0, 10);
     const timeDisplay = toTimeDisplay(filled.time) || filled.time;
 
     // قيم نظيفة (تُستخدم في كلا الوضعين: DEMO و Vercel Postgres)
