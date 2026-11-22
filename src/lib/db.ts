@@ -120,13 +120,13 @@ async function readDemoStoreAsync(): Promise<DemoRecord[]> {
     const records: DemoRecord[] = [];
     for (const blob of blobs) {
       try {
-        // مهم: رابط Blob العام يُخدم عبر CDN وقد يعيد النسخة القديمة بعد
-        // تحديث الملف بنفس المسار (put بنفس pathname) — نضيف معلمة عشوائية
-        // للرابط لتجاوز ذاكرة CDN وقراءة أحدث نسخة مكتوبة دائماً، وإلا
-        // يظهر الاستعلام بيانات قديمة بعد تعديل سجل موجود.
-        const sep = blob.url.includes("?") ? "&" : "?";
-        const bustUrl = `${blob.url}${sep}_cb=${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const res = await fetch(bustUrl, { cache: "no-store" });
+        // مهم: رابط Blob العام (url) يُخدم عبر CDN وقد يعيد النسخة القديمة
+        // بعد إعادة كتابة نفس المسار (put بنفس pathname) — حتى مع معلمات
+        // استعلام عشوائية إن تجاهلها الـ CDN. نستخدم downloadUrl الموقّع
+        // (توقيع فريد لكل استدعاء) فهو يضمن جلباً من المصدر بأحدث نسخة،
+        // وإلا يظهر الاستعلام بيانات قديمة بعد تعديل سجل موجود.
+        const freshUrl = blob.downloadUrl || `${blob.url}${blob.url.includes("?") ? "&" : "?"}_cb=${Date.now()}`;
+        const res = await fetch(freshUrl, { cache: "no-store" });
         if (res.ok) {
           const text = await res.text();
           records.push(JSON.parse(text) as DemoRecord);
