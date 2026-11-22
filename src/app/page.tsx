@@ -583,7 +583,11 @@ export default function Home() {
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
-        throw new Error(err?.message || `HTTP ${resp.status}`);
+        const statusMsg =
+          resp.status === 504 || resp.status === 502
+            ? "كان السيرفر في إقلاع بارد (تشغيل Chromium لأول مرة) — أعد المحاولة بعد لحظات وسينجح التنزيل."
+            : err?.message || `HTTP ${resp.status}`;
+        throw new Error(statusMsg);
       }
       const blob = await resp.blob();
       if (!blob.type.includes("pdf")) {
@@ -601,17 +605,42 @@ export default function Home() {
       const m = cd.match(/filename="?([^";]+)"?/);
       const fileName = m?.[1] || `report-${computed.leaveId === "—" ? Date.now() : computed.leaveId}.pdf`;
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
-      toast({
-        title: "تم تنزيل PDF بنجاح",
-        description: `حُفظ الملف باسم ${fileName} بنفس تنسيق المستودع الأصلي.`,
-      });
+      // متصفحات الجوال (iOS Safari وأندرويد القديم) تتجاهل خاصية download
+      // على blob — نفتح الـ PDF في تبويب جديد حفظاً للمستخدم من فقدان
+      // الصفحة، ومن هناك يحفظه بزر المشاركة/التنزيل.
+      const isMobile =
+        /iP(hone|ad|od)|Android|Mobile/i.test(navigator.userAgent);
+      if (isMobile) {
+        const w = window.open(url, "_blank");
+        if (!w) {
+          // حاجب نوافذ — نرجع للطريقة القياسية
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = fileName;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        }
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        toast({
+          title: "تم تجهيز PDF بنجاح",
+          description: isMobile
+            ? "فُتح التقرير في تبويب جديد — احفظه من قائمة المشاركة/التنزيل."
+            : `حُفظ الملف باسم ${fileName} بنفس تنسيق المستودع الأصلي.`,
+        });
+      } else {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        toast({
+          title: "تم تنزيل PDF بنجاح",
+          description: `حُفظ الملف باسم ${fileName} بنفس تنسيق المستودع الأصلي.`,
+        });
+      }
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "فشل تنزيل PDF";
       toast({ title: "فشل تنزيل PDF", description: message, variant: "destructive" });
