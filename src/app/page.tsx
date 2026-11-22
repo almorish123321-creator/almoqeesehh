@@ -33,6 +33,7 @@ import {
   Image as ImageIcon,
   Trash2,
   QrCode,
+  Download,
 } from "lucide-react";
 import {
   FIELDS,
@@ -138,6 +139,8 @@ export default function Home() {
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
   // نافذة التقرير المُصدر (HTML تنسيق المستودع) — blob URL للفتح مجدداً
   const [htmlBlobUrl, setHtmlBlobUrl] = useState<string | null>(null);
+  // تنزيل PDF منسّق (Chromium خادمياً) — حالة الزر
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   // شعار المنشأة المرفوع (data URL base64) — يُرسل للـ PDF فقط ولا يُخزن في قاعدة البيانات
   // Uploaded facility logo (base64 data URL) — sent to PDF only, not stored in DB
   const [hospitalLogo, setHospitalLogo] = useState<string>("");
@@ -516,6 +519,107 @@ export default function Home() {
   };
 
   // =============================================================
+  //  بناء حِمل NativeReportInput من بيانات النموذج — مشترك بين
+  //  الإصدار (نافذة الطباعة) وتنزيل PDF (Chromium خادمياً)
+  // =============================================================
+  const buildNativePayload = () => {
+    const capturedLeaveId = computed.leaveId === "—" ? "" : computed.leaveId;
+    return {
+      type: formType,
+      patient_name_ar: formData.patient_name_ar,
+      patient_name_en: formData.patient_name_en,
+      national_id: formData.id_number,
+      nationality: formData.nationality_ar,
+      employer: formData.employer_ar,
+      escort_name_ar: formData.escort_name_ar || "",
+      escort_name_en: formData.escort_name_en || "",
+      relation_ar: formData.relation_ar || "",
+      relation_en: formData.relation_en || "",
+      admission_date: formData.admission_date_gregorian,
+      discharge_date: formData.discharge_date_gregorian,
+      duration: formData.duration || "",
+      issue_date: computed.issueDateVal,
+      issue_time: formData.time,
+      admission_time: formData.admission_time || "",
+      discharge_time: formData.discharge_time || "",
+      visit_type_ar: formData.visit_type || "طوارئ",
+      file_dates_enabled: !!formData.file_dates_enabled,
+      file_admission_date: formData.file_admission_date || "",
+      file_discharge_date: formData.file_discharge_date || "",
+      doctor_name_ar: formData.doctor_name_ar,
+      doctor_name_en: formData.doctor_name_en,
+      position_ar: formData.position_ar,
+      position_en: formData.position_en,
+      hospital_ar: formData.hospital_name_ar,
+      hospital_en: formData.hospital_name_en,
+      hospital_type: formData.hospital_type || "public",
+      license_number: formData.license_number,
+      include_qr: formData.include_qr !== false,
+      leave_id: capturedLeaveId,
+      hospital_logo: hospitalLogo || null,
+    };
+  };
+
+  //  تنزيل PDF منسّق — نفس قالب المستودع المرجعي حرفياً، يُرندر
+  //  خادمياً عبر Chromium headless ويعود كملف مرفق جاهز للحفظ
+  //  (بدون نافذة طباعة — التنزيل مباشر)
+  // =============================================================
+  const handleDownloadPdf = async () => {
+    if (!isValid) {
+      toast({
+        title: "بيانات ناقصة",
+        description: `يرجى تعبئة: ${validation.join("، ")}`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setDownloadingPdf(true);
+    try {
+      const resp = await fetch("/api/download-native-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildNativePayload()),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err?.message || `HTTP ${resp.status}`);
+      }
+      const blob = await resp.blob();
+      if (!blob.type.includes("pdf")) {
+        const txt = await blob.text().catch(() => "");
+        let msg = "استجابة غير متوقعة من الخادم";
+        try {
+          msg = JSON.parse(txt)?.message || msg;
+        } catch {
+          /* ليس JSON */
+        }
+        throw new Error(msg);
+      }
+      // اسم الملف من ترويسة Content-Disposition أو رمز الإجازة المحسوب
+      const cd = resp.headers.get("Content-Disposition") || "";
+      const m = cd.match(/filename="?([^";]+)"?/);
+      const fileName = m?.[1] || `report-${computed.leaveId === "—" ? Date.now() : computed.leaveId}.pdf`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toast({
+        title: "تم تنزيل PDF بنجاح",
+        description: `حُفظ الملف باسم ${fileName} بنفس تنسيق المستودع الأصلي.`,
+      });
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "فشل تنزيل PDF";
+      toast({ title: "فشل تنزيل PDF", description: message, variant: "destructive" });
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
   //  إصدار التقرير — التنسيق الأصلي المطابق للمستودع المرجعي
   //  نفس قالب server.js /api/generate-native-pdf (794×1123 A4):
   //  الخادم يبني HTML التقرير كاملاً (خطوط + شعارات + باركود مضمّنة)
@@ -540,7 +644,8 @@ export default function Home() {
     setAction({ pdf: "loading", upload: "loading" });
 
     // رمز الإجازة الموحد (تنسيق المستودع) — يُرسل للـ PDF وقاعدة البيانات معاً
-    const capturedLeaveId = computed.leaveId === "—" ? "" : computed.leaveId;
+    const payload = buildNativePayload();
+    const capturedLeaveId = payload.leave_id as string;
 
     // افتح النافذة فوراً قبل الانتظار — لتجاوز حاجب النوافذ المنبثقة
     // (نفس أسلوب المستودع: النافذة تفتح ثم تُملأ بمحتوى التقرير)
@@ -553,42 +658,6 @@ export default function Home() {
 
     const issuePromise = (async () => {
       try {
-        // مطابقة مفاتيح واجهة NativeReportInput (نفس مفاتيح المستودع):
-        // LeaveFormData (المشروع) ← NativeReportInput (المستودع)
-        const payload = {
-          type: formType,
-          patient_name_ar: formData.patient_name_ar,
-          patient_name_en: formData.patient_name_en,
-          national_id: formData.id_number,
-          nationality: formData.nationality_ar,
-          employer: formData.employer_ar,
-          escort_name_ar: formData.escort_name_ar || "",
-          escort_name_en: formData.escort_name_en || "",
-          relation_ar: formData.relation_ar || "",
-          relation_en: formData.relation_en || "",
-          admission_date: formData.admission_date_gregorian,
-          discharge_date: formData.discharge_date_gregorian,
-          duration: formData.duration || "",
-          issue_date: computed.issueDateVal,
-          issue_time: formData.time,
-          admission_time: formData.admission_time || "",
-          discharge_time: formData.discharge_time || "",
-          visit_type_ar: formData.visit_type || "طوارئ",
-          file_dates_enabled: !!formData.file_dates_enabled,
-          file_admission_date: formData.file_admission_date || "",
-          file_discharge_date: formData.file_discharge_date || "",
-          doctor_name_ar: formData.doctor_name_ar,
-          doctor_name_en: formData.doctor_name_en,
-          position_ar: formData.position_ar,
-          position_en: formData.position_en,
-          hospital_ar: formData.hospital_name_ar,
-          hospital_en: formData.hospital_name_en,
-          hospital_type: formData.hospital_type || "public",
-          license_number: formData.license_number,
-          include_qr: formData.include_qr !== false,
-          leave_id: capturedLeaveId,
-          hospital_logo: hospitalLogo || null,
-        };
         const resp = await fetch("/api/generate-native-report", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1231,7 +1300,7 @@ export default function Home() {
                   إصدار التقرير وحفظ البيانات
                 </CardTitle>
                 <CardDescription>
-                  بضغطة واحدة: يُصدر التقرير بالتنسيق الأصلي للمستودع (نافذة طباعة — اختر حفظ كـ PDF)، وتُحفظ البيانات في قاعدة البيانات في نفس اللحظة.
+                  إصدار التقرير بالتنسيق الأصلي للمستودع (نافذة طباعة — اختر حفظ كـ PDF) أو تنزيل ملف PDF منسّق مباشرة، مع حفظ البيانات في قاعدة البيانات.
                 </CardDescription>
               </CardHeader>
               <CardContent className="pt-6 space-y-4">
@@ -1301,6 +1370,23 @@ export default function Home() {
                       <>
                         <Printer className="w-5 h-5 ml-2" />
                         إصدار التقرير
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    onClick={handleDownloadPdf}
+                    disabled={!isValid || isBusy || downloadingPdf}
+                    className="bg-[#00A99D] hover:bg-[#089186] text-white text-base h-12 px-6"
+                  >
+                    {downloadingPdf ? (
+                      <>
+                        <Loader2 className="w-5 h-5 ml-2 animate-spin" />
+                        جارٍ تجهيز PDF...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-5 h-5 ml-2" />
+                        تنزيل PDF منسّق
                       </>
                     )}
                   </Button>
