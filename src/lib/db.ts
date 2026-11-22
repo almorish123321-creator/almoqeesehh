@@ -13,7 +13,7 @@
  */
 
 import { sql as vercelSql } from "@vercel/postgres";
-import { put, list } from "@vercel/blob";
+import { put, list, del } from "@vercel/blob";
 import fs from "fs";
 import path from "path";
 
@@ -117,15 +117,31 @@ async function readDemoStoreAsync(): Promise<DemoRecord[]> {
   }
   try {
     const { blobs } = await list({ prefix: BLOB_PREFIX, limit: 1000 });
+    // كل كتابة تُنشئ نسخة بمسار فريد (sick-leaves/{id}.json.{suffix}) —
+    // نأخذ أحدث نسخة (uploadedAt) لكل معرّف سجل فقط، ونحذف المتقادم
+    // خلفياً حتى لا ينمو المخزن بلا حدود.
+    const sorted = [...blobs].sort(
+      (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime(),
+    );
+    const latestById = new Map<string, (typeof blobs)[number]>();
+    const supersededUrls: string[] = [];
+    const idRe = /^sick-leaves\/(\d+)\.json/;
+    for (const blob of sorted) {
+      const m = idRe.exec(blob.pathname);
+      if (!m) continue;
+      const id = m[1];
+      if (!latestById.has(id)) latestById.set(id, blob);
+      else supersededUrls.push(blob.url);
+    }
+    if (supersededUrls.length) {
+      del(supersededUrls).catch(() => {
+        /* التنظيف اختياري — تجاهل الأخطاء */
+      });
+    }
     const records: DemoRecord[] = [];
-    for (const blob of blobs) {
+    for (const blob of latestById.values()) {
       try {
-        // مهم: رابط Blob العام (url) يُخدم عبر CDN وقد يعيد النسخة القديمة
-        // بعد إعادة كتابة نفس المسار (put بنفس pathname) — حتى مع معلمات
-        // استعلام عشوائية إن تجاهلها الـ CDN. نستخدم downloadUrl الموقّع
-        // (توقيع فريد لكل استدعاء) فهو يضمن جلباً من المصدر بأحدث نسخة،
-        // وإلا يظهر الاستعلام بيانات قديمة بعد تعديل سجل موجود.
-        const freshUrl = blob.downloadUrl || `${blob.url}${blob.url.includes("?") ? "&" : "?"}_cb=${Date.now()}`;
+        const freshUrl = blob.downloadUrl || blob.url;
         const res = await fetch(freshUrl, { cache: "no-store" });
         if (res.ok) {
           const text = await res.text();
@@ -143,6 +159,13 @@ async function readDemoStoreAsync(): Promise<DemoRecord[]> {
 
 /**
  * Write a single DEMO record to Vercel Blob storage.
+ *
+ * مهم: نكتب كل نسخة بمسار فريد (addRandomSuffix: true) — رابط Blob العام
+ * يُخدَم عبر CDN بذاكرة تخزين مؤقت لا يمكن تجاوزها حتى بمعلمات استعلام
+ * أو روابط موقّعة، فإذا أعدنا كتابة نفس المسار بقي الاستعلام يعيد
+ * النسخة القديمة لساعات. بالمسارات الفريدة كل قراءة لمسار جديد تعيد
+ * أحدث محتوى مكتوباً — مضمونة دائماً. النسخ المتقادمة تُحذف في القراءة
+ * (انظر readDemoStoreAsync).
  */
 async function writeDemoRecordAsync(record: DemoRecord): Promise<void> {
   if (!IS_VERCEL) {
@@ -158,7 +181,7 @@ async function writeDemoRecordAsync(record: DemoRecord): Promise<void> {
     await put(pathname, JSON.stringify(record, null, 2), {
       access: "public",
       contentType: "application/json",
-      addRandomSuffix: false,
+      addRandomSuffix: true,
     });
   } catch (e) {
     console.error("[demo] writeDemoRecordAsync error:", e);
