@@ -125,6 +125,21 @@ export function toTimeDisplay(timeInput: string): string {
 }
 
 /**
+ * حقول التعبئة الذكية — نفس حقول رسالة البوت الأصلية (17 حقلاً).
+ * حقول المرافق ومشهد المراجعة وتاريخ الإصدار/المدة اليدوية غير موجودة
+ * في رسالة البوت فتُستثنى من التحليل.
+ */
+const PASTE_FIELDS = FIELDS.filter(
+  (f) =>
+    (f.group === "patient" ||
+      f.group === "leave" ||
+      f.group === "doctor" ||
+      f.group === "hospital") &&
+    f.key !== "issue_date" &&
+    f.key !== "duration",
+);
+
+/**
  * Parse a pasted bot message into a LeaveFormData object.
  * Only fields that are matched will be filled; others stay as they were.
  *
@@ -139,7 +154,7 @@ export function parseBotMessage(
   const data: LeaveFormData = { ...base };
   const matchedFields: string[] = [];
 
-  for (const field of FIELDS) {
+  for (const field of PASTE_FIELDS) {
     const pattern = buildPattern(field.emoji, field.labelAr);
     const match = message.match(pattern);
     if (match && match[1]) {
@@ -160,7 +175,7 @@ export function parseBotMessage(
     }
   }
 
-  return { data, matchedFields, totalFields: FIELDS.length };
+  return { data, matchedFields, totalFields: PASTE_FIELDS.length };
 }
 
 /**

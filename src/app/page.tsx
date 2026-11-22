@@ -32,6 +32,7 @@ import {
   ArrowLeftRight,
   Image as ImageIcon,
   Trash2,
+  QrCode,
 } from "lucide-react";
 import {
   FIELDS,
@@ -39,6 +40,8 @@ import {
   LeaveFormData,
   EMPTY_FORM,
   FieldMeta,
+  NATIVE_FORM_TYPES,
+  NativeFormType,
 } from "@/lib/leave-form";
 import {
   parseBotMessage,
@@ -49,6 +52,7 @@ import {
   calculateDays,
   generateLeaveId,
 } from "@/lib/parser";
+import { generateNativeLeaveId } from "@/lib/native-report";
 
 const SAMPLE_MESSAGE = `👤 اسم المريض (عربي): عبدالله محمد علي
 👤 اسم المريض (إنجليزي): Abdullah Mohammed Ali
@@ -89,6 +93,8 @@ function recordToForm(r: any): LeaveFormData {
   // PSL → private). Falls back to "public" for legacy records.
   const code: string = r.gslCode || r.gsl_code || "";
   const inferredType: "public" | "private" = code.startsWith("PSL") ? "private" : "public";
+  // نوع النموذج المحفوظ (الأنواع الأربعة) — الافتراضي sickleave للسجلات القديمة
+  const savedType = String(r.leaveType || "sickleave") as NativeFormType;
   return {
     patient_name_ar: r.nameAr || "",
     patient_name_en: r.nameEn || "",
@@ -108,6 +114,15 @@ function recordToForm(r: any): LeaveFormData {
     license_number: r.licenseNumber || "",
     time: toTimeInputValue(r.timeFrom) || r.timeFrom || "",
     hospital_type: inferredType,
+    form_type: (NATIVE_FORM_TYPES.some((t) => t.value === savedType) ? savedType : "sickleave") as NativeFormType,
+    escort_name_ar: r.escortNameAr || "",
+    escort_name_en: r.escortNameEn || "",
+    relation_ar: r.relationAr || "",
+    relation_en: r.relationEn || "",
+    admission_time: toTimeInputValue(r.admissionTime) || r.admissionTime || "07:25",
+    discharge_time: toTimeInputValue(r.dischargeTime) || r.dischargeTime || "08:35",
+    visit_type: r.visitType || "طوارئ",
+    issue_date: toDateInputValue(r.issueDate) || "",
   };
 }
 
@@ -121,6 +136,8 @@ export default function Home() {
   const [pasteStats, setPasteStats] = useState<{ matched: number; total: number } | null>(null);
   const [action, setAction] = useState<ActionState>(INITIAL_ACTION);
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
+  // نافذة التقرير المُصدر (HTML تنسيق المستودع) — blob URL للفتح مجدداً
+  const [htmlBlobUrl, setHtmlBlobUrl] = useState<string | null>(null);
   // شعار المنشأة المرفوع (data URL base64) — يُرسل للـ PDF فقط ولا يُخزن في قاعدة البيانات
   // Uploaded facility logo (base64 data URL) — sent to PDF only, not stored in DB
   const [hospitalLogo, setHospitalLogo] = useState<string>("");
@@ -159,6 +176,12 @@ export default function Home() {
 
   const isBusy = action.pdf === "loading" || action.upload === "loading";
 
+  // ===== نوع النموذج المُختار (النماذج الأربعة من المستودع المرجعي) =====
+  const formType: NativeFormType = (formData.form_type || "sickleave") as NativeFormType;
+  const isCompanionType = formType === "companion" || formType === "companion_review";
+  const isVisitReview = formType === "visit_review";
+  const todayISO = new Date().toISOString().slice(0, 10);
+
   // عند العودة من صفحة الاستعلام (/inquiries/slenquiry) مع بيانات محملة،
   // اقرأها من sessionStorage وعبّئ النموذج بها تلقائياً.
   // When returning from the inquiry page with loaded data, read it from
@@ -187,8 +210,15 @@ export default function Home() {
     }
   }, []);
 
+  // تعيين تاريخ إصدار التقرير إلى اليوم تلقائياً — كما تفعل المستودع
+  // عند فتح نموذج جديد (app.js startForm: issue_date.value = todayStr)
+  useEffect(() => {
+    setFormData((prev) => (prev.issue_date ? prev : { ...prev, issue_date: todayISO }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // --- Field update ---
-  const updateField = (key: keyof LeaveFormData, value: string) => {
+  const updateField = (key: keyof LeaveFormData, value: any) => {
     setFormData((prev) => ({ ...prev, [key]: value }) as LeaveFormData);
   };
 
@@ -217,7 +247,7 @@ export default function Home() {
   };
 
   const handleClearAll = () => {
-    setFormData({ ...EMPTY_FORM });
+    setFormData({ ...EMPTY_FORM, issue_date: todayISO });
     setPasteText("");
     setPasteStats(null);
     setAction(INITIAL_ACTION);
@@ -227,6 +257,10 @@ export default function Home() {
     if (pdfBlobUrl) {
       URL.revokeObjectURL(pdfBlobUrl);
       setPdfBlobUrl(null);
+    }
+    if (htmlBlobUrl) {
+      URL.revokeObjectURL(htmlBlobUrl);
+      setHtmlBlobUrl(null);
     }
     toast({ title: "تم مسح كل البيانات", description: "أصبح النموذج جاهزاً لإدخال جديد." });
   };
@@ -315,8 +349,10 @@ export default function Home() {
     if (!formData.id_number.trim()) errors.push("رقم الهوية");
     if (!formData.admission_date_gregorian) errors.push("تاريخ الدخول");
     if (!formData.discharge_date_gregorian) errors.push("تاريخ الخروج");
+    // اسم المرافق مطلوب لنوعي المرافقة ومشهد مراجعة لمرافق (اسم المرافق هو الاسم المعروض في التقرير)
+    if (isCompanionType && !formData.escort_name_ar?.trim()) errors.push("اسم المرافق (عربي)");
     return errors;
-  }, [formData]);
+  }, [formData, isCompanionType]);
 
   const isValid = validation.length === 0;
 
@@ -328,21 +364,38 @@ export default function Home() {
       formData.admission_date_gregorian && formData.discharge_date_gregorian
         ? calculateDays(formData.admission_date_gregorian, formData.discharge_date_gregorian)
         : 0;
-    // Pass hospital_type to generateLeaveId so the prefix is GSL (public)
+    // Pass hospital_type to the native generator so the prefix is GSL (public)
     // or PSL (private). Defaults to "public" if the field is somehow unset.
     const hospitalType: "public" | "private" =
       formData.hospital_type === "private" ? "private" : "public";
+    const issueDateVal = formData.issue_date || todayISO;
+    // توليد رمز الإجازة بنفس خوارزمية المستودع المرجعي
+    // (الشفر الأفين التسلسلي الزمني: GSL/PSL + YYMMDD + 5 أرقام مشفرة)
     const leaveId =
       formData.id_number && formData.admission_date_gregorian && formData.discharge_date_gregorian
-        ? generateLeaveId(
-            formData.id_number,
-            formData.admission_date_gregorian,
-            formData.discharge_date_gregorian,
-            hospitalType,
-          )
+        ? generateNativeLeaveId(issueDateVal, hospitalType)
         : "—";
-    return { admissionDisp, dischargeDisp, days, leaveId, timeDisp: toTimeDisplay(formData.time) };
-  }, [formData]);
+    // فترة الانتظار لمشهد المراجعة (ساعات، الدقائق -- كالنموذج المرجعي)
+    let waiting = "";
+    if (isVisitReview && formData.admission_time && formData.discharge_time) {
+      const toMin = (t: string) => {
+        const [h, m] = t.split(":").map(Number);
+        return (h || 0) * 60 + (m || 0);
+      };
+      let diff = toMin(formData.discharge_time) - toMin(formData.admission_time);
+      if (diff < 0) diff = 0;
+      waiting = `${String(Math.floor(diff / 60)).padStart(2, "0")} ساعة و -- دقيقة`;
+    }
+    return {
+      admissionDisp,
+      dischargeDisp,
+      days,
+      leaveId,
+      waiting,
+      issueDateVal,
+      timeDisp: toTimeDisplay(formData.time),
+    };
+  }, [formData, isVisitReview, todayISO]);
 
   // --- Combined action: print PDF + upload data ---
   const handlePrintAndUpload = async () => {
@@ -462,6 +515,160 @@ export default function Home() {
     }
   };
 
+  // =============================================================
+  //  إصدار التقرير — التنسيق الأصلي المطابق للمستودع المرجعي
+  //  نفس قالب server.js /api/generate-native-pdf (794×1123 A4):
+  //  الخادم يبني HTML التقرير كاملاً (خطوط + شعارات + باركود مضمّنة)
+  //  ويُفتح في نافذة جديدة تطبع تلقائياً — نفس محرك الرندر في
+  //  Puppeteer بالمستودع، فالناتج مطابق بصرياً 100%.
+  //  الأنواع الأربعة: sickleave | companion | companion_review | visit_review
+  // =============================================================
+  const handleIssueNative = async () => {
+    if (!isValid) {
+      toast({
+        title: "بيانات ناقصة",
+        description: `يرجى تعبئة: ${validation.join("، ")}`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (htmlBlobUrl) {
+      URL.revokeObjectURL(htmlBlobUrl);
+      setHtmlBlobUrl(null);
+    }
+    setAction({ pdf: "loading", upload: "loading" });
+
+    // رمز الإجازة الموحد (تنسيق المستودع) — يُرسل للـ PDF وقاعدة البيانات معاً
+    const capturedLeaveId = computed.leaveId === "—" ? "" : computed.leaveId;
+
+    // افتح النافذة فوراً قبل الانتظار — لتجاوز حاجب النوافذ المنبثقة
+    // (نفس أسلوب المستودع: النافذة تفتح ثم تُملأ بمحتوى التقرير)
+    let issueWindow: Window | null = null;
+    try {
+      issueWindow = window.open("", "_blank");
+    } catch {
+      issueWindow = null;
+    }
+
+    const issuePromise = (async () => {
+      try {
+        // مطابقة مفاتيح واجهة NativeReportInput (نفس مفاتيح المستودع):
+        // LeaveFormData (المشروع) ← NativeReportInput (المستودع)
+        const payload = {
+          type: formType,
+          patient_name_ar: formData.patient_name_ar,
+          patient_name_en: formData.patient_name_en,
+          national_id: formData.id_number,
+          nationality: formData.nationality_ar,
+          employer: formData.employer_ar,
+          escort_name_ar: formData.escort_name_ar || "",
+          escort_name_en: formData.escort_name_en || "",
+          relation_ar: formData.relation_ar || "",
+          relation_en: formData.relation_en || "",
+          admission_date: formData.admission_date_gregorian,
+          discharge_date: formData.discharge_date_gregorian,
+          duration: formData.duration || "",
+          issue_date: computed.issueDateVal,
+          issue_time: formData.time,
+          admission_time: formData.admission_time || "",
+          discharge_time: formData.discharge_time || "",
+          visit_type_ar: formData.visit_type || "طوارئ",
+          file_dates_enabled: !!formData.file_dates_enabled,
+          file_admission_date: formData.file_admission_date || "",
+          file_discharge_date: formData.file_discharge_date || "",
+          doctor_name_ar: formData.doctor_name_ar,
+          doctor_name_en: formData.doctor_name_en,
+          position_ar: formData.position_ar,
+          position_en: formData.position_en,
+          hospital_ar: formData.hospital_name_ar,
+          hospital_en: formData.hospital_name_en,
+          hospital_type: formData.hospital_type || "public",
+          license_number: formData.license_number,
+          include_qr: formData.include_qr !== false,
+          leave_id: capturedLeaveId,
+          hospital_logo: hospitalLogo || null,
+        };
+        const resp = await fetch("/api/generate-native-report", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err?.message || `HTTP ${resp.status}`);
+        }
+        const html = await resp.text();
+        const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        setHtmlBlobUrl(url);
+        if (issueWindow && !issueWindow.closed) {
+          issueWindow.location.href = url;
+        } else {
+          window.open(url, "_blank");
+        }
+        return {
+          ok: true,
+          message: "تم إصدار التقرير وفتح نافذة الطباعة — اختر (حفظ كـ PDF) أو اطبع.",
+        };
+      } catch (e: any) {
+        if (issueWindow && !issueWindow.closed) issueWindow.close();
+        return { ok: false, message: e?.message || "فشل إصدار التقرير" };
+      }
+    })();
+
+    const uploadPromise = (async () => {
+      try {
+        const resp = await fetch("/api/upload-leave", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...formData, leave_id: capturedLeaveId, issue_date: computed.issueDateVal }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.success) {
+          return { ok: false, message: data?.message || `HTTP ${resp.status}`, leaveId: data?.leave_id, recordId: data?.record_id };
+        }
+        return { ok: true, message: data.message || "تم حفظ البيانات في قاعدة البيانات", leaveId: data.leave_id, recordId: data.record_id };
+      } catch (e: any) {
+        return { ok: false, message: e?.message || "فشل حفظ البيانات" };
+      }
+    })();
+
+    const [issueRes, uploadRes] = await Promise.all([issuePromise, uploadPromise]);
+
+    setAction({
+      pdf: issueRes.ok ? "success" : "error",
+      upload: uploadRes.ok ? "success" : "error",
+      pdfMessage: issueRes.message,
+      uploadMessage: uploadRes.message,
+      leaveId: uploadRes.leaveId || (issueRes.ok ? capturedLeaveId : undefined),
+      recordId: uploadRes.recordId,
+    });
+
+    if (issueRes.ok && uploadRes.ok) {
+      toast({
+        title: "تم الإصدار بنجاح",
+        description: "فُتحت نافذة طباعة التقرير وحُفظت البيانات في قاعدة البيانات.",
+      });
+    } else if (issueRes.ok) {
+      toast({ title: "تم الإصدار، فشل الحفظ", description: uploadRes.message, variant: "destructive" });
+    } else if (uploadRes.ok) {
+      toast({ title: "تم الحفظ، فشل الإصدار", description: issueRes.message, variant: "destructive" });
+    } else {
+      toast({
+        title: "فشلت العمليتان",
+        description: `إصدار: ${issueRes.message} | حفظ: ${uploadRes.message}`,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleOpenReportAgain = () => {
+    if (htmlBlobUrl) {
+      window.open(htmlBlobUrl, "_blank");
+    }
+  };
+
   // --- Inquiry ---
   // highlights: السجل الذي تم حفظه/طباعته للتو ليُبرز في نتائج الاستعلام
   const [highlightId, setHighlightId] = useState<number | null>(null);
@@ -543,7 +750,14 @@ export default function Home() {
 
   // Group fields
   const grouped = useMemo(() => {
-    const g: Record<string, FieldMeta[]> = { patient: [], leave: [], doctor: [], hospital: [] };
+    const g: Record<string, FieldMeta[]> = {
+      patient: [],
+      leave: [],
+      doctor: [],
+      hospital: [],
+      escort: [],
+      visit: [],
+    };
     for (const f of FIELDS) g[f.group].push(f);
     return g;
   }, []);
@@ -669,6 +883,51 @@ export default function Home() {
           {/*  TAB 1: New leave                                      */}
           {/* ====================================================== */}
           <TabsContent value="new" className="space-y-6">
+            {/* ====================================================== */}
+            {/*  نوع النموذج — النماذج الأربعة من المستودع المرجعي      */}
+            {/*  sickleave | companion | companion_review | visit_review */}
+            {/* ====================================================== */}
+            <Card className="border-2 border-[#2c3e77]/30 shadow-sm">
+              <CardHeader className="bg-[#2c3e77]/5 border-b border-[#2c3e77]/15">
+                <CardTitle className="flex items-center gap-2 text-[#2c3e77]">
+                  <FileText className="w-5 h-5" />
+                  نوع النموذج — اختر النموذج المراد إصداره
+                </CardTitle>
+                <CardDescription>
+                  النماذج الأربعة بنفس تنسيقات المستودع المرجعي حرفياً (الخطوط، الألوان، الجدول، الباركود) — اختر النموذج وعدّل الحقول ثم اضغط (إصدار التقرير).
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="pt-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {NATIVE_FORM_TYPES.map((t) => {
+                    const active = formType === t.value;
+                    return (
+                      <button
+                        key={t.value}
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => updateField("form_type", t.value)}
+                        aria-pressed={active}
+                        className={`text-right rounded-xl border-2 p-4 transition-all disabled:opacity-50 ${
+                          active
+                            ? "border-[#306db5] bg-[#306db5]/10 shadow-md ring-2 ring-[#306db5]/30"
+                            : "border-slate-200 bg-white hover:border-[#306db5]/60 hover:shadow-sm"
+                        }`}
+                      >
+                        <div className="text-2xl mb-1.5">{t.emoji}</div>
+                        <div className={`font-bold text-sm ${active ? "text-[#306db5]" : "text-slate-800"}`}>
+                          {t.labelAr}
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-1" dir="ltr">
+                          {t.descAr}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+
             {/* Smart paste */}
             <Card className="border-2 border-[#306db5]/30 shadow-sm">
               <CardHeader className="bg-[#306db5]/5 border-b border-[#306db5]/15">
@@ -808,7 +1067,14 @@ export default function Home() {
               <CardContent className="pt-6 space-y-6">
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   <SummaryTile label="رمز الإجازة" value={computed.leaveId} />
-                  <SummaryTile label="عدد الأيام" value={String(computed.days)} />
+                  {isVisitReview ? (
+                    <>
+                      <SummaryTile label="فترة الانتظار" value={computed.waiting || "—"} />
+                      <SummaryTile label="نوع الزيارة" value={formData.visit_type || "طوارئ"} />
+                    </>
+                  ) : (
+                    <SummaryTile label="عدد الأيام" value={String(computed.days)} />
+                  )}
                   <SummaryTile label="تاريخ الدخول" value={computed.admissionDisp || "—"} />
                   <SummaryTile label="تاريخ الخروج" value={computed.dischargeDisp || "—"} />
                 </div>
@@ -863,27 +1129,97 @@ export default function Home() {
                   </div>
                 </div>
 
-                {(["patient", "leave", "doctor", "hospital"] as const).map((groupKey) => (
-                  <section key={groupKey} className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="secondary" className="text-[#2c3e77] bg-[#306db5]/10">
-                        {GROUP_LABELS[groupKey].icon} {GROUP_LABELS[groupKey].ar}
-                      </Badge>
-                      <Separator className="flex-1 bg-slate-200" />
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {grouped[groupKey].map((field) => (
-                        <FieldInput
-                          key={field.key}
-                          field={field}
-                          value={(formData[field.key] as string) ?? ""}
-                          onChange={(v) => updateField(field.key, v)}
-                          disabled={isBusy}
-                        />
-                      ))}
-                    </div>
-                  </section>
-                ))}
+                {/* ===== تفعيل تواريخ الدخول والخروج الخاصة بالملف =====
+                    ميزة المستودع المرجعي: عند التفعيل تُستبدل تواريخ الدخول والخروج
+                    في جدول التقرير بتواريخ الملف (صف المدة يبقى على تواريخ الإجازة).
+                    تختفي لنوع مشهد المراجعة (كما في المستودع). */}
+                {!isVisitReview && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-4 space-y-3">
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={!!formData.file_dates_enabled}
+                        onChange={(e) => updateField("file_dates_enabled", e.target.checked)}
+                        disabled={isBusy}
+                        className="w-5 h-5 mt-1 accent-[#306db5] shrink-0 cursor-pointer"
+                      />
+                      <span className="text-sm font-semibold text-slate-800 leading-6">
+                        تفعيل تواريخ الدخول والخروج الخاصة بالملف
+                        <br />
+                        <small className="font-normal text-slate-500 text-xs">
+                          تُستخدم عند طلب المريض أن يكون تاريخ الدخول والخروج في الملف بنفس اليوم أو مختلفاً عن تاريخ الإجازة المُصدرة
+                        </small>
+                      </span>
+                    </label>
+                    {formData.file_dates_enabled && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="space-y-1.5">
+                          <Label className="text-xs sm:text-sm flex items-center gap-1.5 text-slate-700">
+                            <span aria-hidden>📅</span> تاريخ الدخول في الملف
+                          </Label>
+                          <Input
+                            type="date"
+                            value={formData.file_admission_date || ""}
+                            onChange={(e) => updateField("file_admission_date", e.target.value)}
+                            disabled={isBusy}
+                            className="bg-white"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs sm:text-sm flex items-center gap-1.5 text-slate-700">
+                            <span aria-hidden>📅</span> تاريخ الخروج في الملف
+                          </Label>
+                          <Input
+                            type="date"
+                            value={formData.file_discharge_date || ""}
+                            onChange={(e) => updateField("file_discharge_date", e.target.value)}
+                            disabled={isBusy}
+                            className="bg-white"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {([
+                  "patient",
+                  "leave",
+                  "doctor",
+                  "hospital",
+                  "escort",
+                  "visit",
+                ] as const)
+                  .filter((groupKey) =>
+                    groupKey === "escort"
+                      ? isCompanionType
+                      : groupKey === "visit"
+                        ? isVisitReview
+                        : true,
+                  )
+                  .map((groupKey) => (
+                    <section key={groupKey} className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="secondary" className="text-[#2c3e77] bg-[#306db5]/10">
+                          {GROUP_LABELS[groupKey].icon} {GROUP_LABELS[groupKey].ar}
+                        </Badge>
+                        <Separator className="flex-1 bg-slate-200" />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {grouped[groupKey]
+                          .filter((f) => (f.key === "duration" ? !isVisitReview : true))
+                          .map((field) => (
+                            <FieldInput
+                              key={field.key}
+                              field={field}
+                              value={(formData[field.key] as string) ?? ""}
+                              onChange={(v) => updateField(field.key, v)}
+                              disabled={isBusy}
+                            />
+                          ))}
+                      </div>
+                    </section>
+                  ))}
               </CardContent>
             </Card>
 
@@ -892,10 +1228,10 @@ export default function Home() {
               <CardHeader className="bg-gradient-to-l from-[#306db5]/10 to-transparent border-b">
                 <CardTitle className="text-[#2c3e77] flex items-center gap-2">
                   <Printer className="w-5 h-5" />
-                  طباعة التقرير وحفظ البيانات
+                  إصدار التقرير وحفظ البيانات
                 </CardTitle>
                 <CardDescription>
-                  بضغطة واحدة: يُولَّد ملف PDF ويُفتح للطباعة، وتُحفظ البيانات في قاعدة Vercel Postgres في نفس اللحظة.
+                  بضغطة واحدة: يُصدر التقرير بالتنسيق الأصلي للمستودع (نافذة طباعة — اختر حفظ كـ PDF)، وتُحفظ البيانات في قاعدة البيانات في نفس اللحظة.
                 </CardDescription>
               </CardHeader>
               <CardContent className="pt-6 space-y-4">
@@ -904,25 +1240,41 @@ export default function Home() {
                     <Info className="w-4 h-4" />
                     <AlertTitle>حقول مطلوبة</AlertTitle>
                     <AlertDescription>
-                      يرجى تعبئة الحقول التالية قبل الطباعة: {validation.join("، ")}.
+                      يرجى تعبئة الحقول التالية قبل الإصدار: {validation.join("، ")}.
                     </AlertDescription>
                   </Alert>
                 )}
 
+                {/* خيار الباركود — كما في المستودع المرجعي (include_qr) */}
+                <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/60 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    id="include-qr"
+                    checked={formData.include_qr !== false}
+                    onChange={(e) => updateField("include_qr", e.target.checked)}
+                    disabled={isBusy}
+                    className="w-4 h-4 accent-[#306db5] cursor-pointer"
+                  />
+                  <Label htmlFor="include-qr" className="text-sm font-semibold text-slate-700 cursor-pointer flex items-center gap-1.5 m-0">
+                    <QrCode className="w-4 h-4" />
+                    إضافة باركود (QR Code) للتقرير
+                  </Label>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <StatusBlock
-                    title="حالة الطباعة (PDF)"
+                    title="حالة الإصدار (تنسيق المستودع)"
                     status={action.pdf}
                     message={action.pdfMessage}
                     icon={<FileText className="w-5 h-5" />}
                     onAction={
-                      action.pdf === "success" && pdfBlobUrl
-                        ? { label: "فتح PDF مجدداً", onClick: handlePrintAgain }
+                      action.pdf === "success" && htmlBlobUrl
+                        ? { label: "فتح التقرير مجدداً", onClick: handleOpenReportAgain }
                         : undefined
                     }
                   />
                   <StatusBlock
-                    title="حالة الحفظ (Vercel Postgres)"
+                    title="حالة الحفظ (قاعدة البيانات)"
                     status={action.upload}
                     message={action.uploadMessage}
                     icon={<Database className="w-5 h-5" />}
@@ -936,27 +1288,39 @@ export default function Home() {
 
                 <div className="flex flex-wrap items-center gap-2 pt-2">
                   <Button
-                    onClick={handlePrintAndUpload}
+                    onClick={handleIssueNative}
                     disabled={!isValid || isBusy}
                     className="bg-[#2c3e77] hover:bg-[#243559] text-white text-base h-12 px-6"
                   >
                     {isBusy ? (
                       <>
                         <Loader2 className="w-5 h-5 ml-2 animate-spin" />
-                        جارٍ الطباعة والحفظ...
+                        جارٍ الإصدار والحفظ...
                       </>
                     ) : (
                       <>
                         <Printer className="w-5 h-5 ml-2" />
-                        طباعة PDF + حفظ البيانات
+                        إصدار التقرير
                       </>
                     )}
                   </Button>
+                  {/* مسار الطباعة القديم (PDFKit) — متاح للإجازة المرضية فقط */}
+                  {formType === "sickleave" && (
+                    <Button
+                      variant="outline"
+                      onClick={handlePrintAndUpload}
+                      disabled={!isValid || isBusy}
+                      className="h-12"
+                    >
+                      <Printer className="w-4 h-4 ml-1" />
+                      PDF بالتنسيق السابق
+                    </Button>
+                  )}
                   {pdfBlobUrl && (
                     <Button variant="outline" asChild>
                       <a href={pdfBlobUrl} download={`sick_leave_${computed.leaveId}.pdf`} target="_blank" rel="noreferrer">
                         <ExternalLink className="w-4 h-4 ml-1" />
-                        تنزيل ملف PDF
+                        تنزيل PDF القديم
                       </a>
                     </Button>
                   )}
@@ -972,7 +1336,7 @@ export default function Home() {
                   )}
                 </div>
 
-                {/* رسالة توضيحية تربط الطباعة بالاستعلام */}
+                {/* رسالة توضيحية تربط الإصدار بالاستعلام */}
                 {action.upload === "success" && action.leaveId && (
                   <Alert className="bg-emerald-50 border-emerald-200 text-emerald-900">
                     <CheckCircle2 className="w-4 h-4" />

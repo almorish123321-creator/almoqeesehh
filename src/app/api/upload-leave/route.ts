@@ -34,6 +34,15 @@ export async function POST(req: NextRequest) {
     const body = (await req.json()) as LeaveFormData;
     const filled: LeaveFormData = { ...DEFAULTS, ...body } as any;
 
+    // نوع النموذج (الأنواع الأربعة من المستودع المرجعي) — يُخزَّن في عمود leave_type
+    const formType =
+      filled.form_type &&
+      ["sickleave", "companion", "companion_review", "visit_review"].includes(
+        filled.form_type,
+      )
+        ? filled.form_type
+        : "sickleave";
+
     if (!filled.id_number) filled.id_number = DEFAULTS.id_number;
     if (!filled.patient_name_ar) filled.patient_name_ar = DEFAULTS.patient_name_ar;
     // Ensure hospital_type is set (default "public" for backward compat with
@@ -78,6 +87,26 @@ export async function POST(req: NextRequest) {
     const specAr = emptyToNull(filled.position_ar);
     const specEn = emptyToNull(filled.position_en);
 
+    // حقول المرافق ومشهد المراجعة (النماذج الأربعة)
+    const escAr = emptyToNull(filled.escort_name_ar);
+    const escEn = emptyToNull(filled.escort_name_en);
+    const relAr = emptyToNull(filled.relation_ar);
+    const relEn = emptyToNull(filled.relation_en);
+    const admTime = emptyToNull(filled.admission_time);
+    const disTime = emptyToNull(filled.discharge_time);
+    const visitType = emptyToNull(filled.visit_type);
+
+    /** حقول المرافق ومشهد المراجعة المشتركة بين وضعي DEMO و Postgres */
+    const extraDemoFields = {
+      escort_name_ar: escAr,
+      escort_name_en: escEn,
+      relation_ar: relAr,
+      relation_en: relEn,
+      admission_time: admTime,
+      discharge_time: disTime,
+      visit_type: visitType,
+    };
+
     // اضمن وجود الجداول (آمن للاستدعاء المتكرر) — أو احفظ في الذاكرة في وضع DEMO
     if (isDemoMode()) {
       try {
@@ -102,7 +131,8 @@ export async function POST(req: NextRequest) {
           hospital_name_ar: hospAr,
           hospital_name_en: hospEn,
           license_number: licenseNumber,
-          leave_type: "sick",
+          leave_type: formType,
+          ...extraDemoFields,
         });
         return NextResponse.json({
           success: true,
@@ -156,7 +186,8 @@ export async function POST(req: NextRequest) {
             hospital_name_ar: hospAr,
             hospital_name_en: hospEn,
             license_number: licenseNumber,
-            leave_type: "sick",
+            leave_type: formType,
+            ...extraDemoFields,
           });
           return NextResponse.json({
             success: true,
@@ -297,7 +328,14 @@ export async function POST(req: NextRequest) {
           hospital_name_ar = ${hospAr},
           hospital_name_en = ${hospEn},
           license_number = ${licenseNumber},
-          leave_type = 'sick',
+          leave_type = ${formType},
+          escort_name_ar = ${escAr},
+          escort_name_en = ${escEn},
+          relation_ar = ${relAr},
+          relation_en = ${relEn},
+          admission_time = ${admTime},
+          discharge_time = ${disTime},
+          visit_type = ${visitType},
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ${recordId}
       `;
@@ -311,7 +349,9 @@ export async function POST(req: NextRequest) {
           doctor_id, doctor_name_ar, doctor_name_en,
           doctor_specialty_ar, doctor_specialty_en,
           hospital_id, hospital_name_ar, hospital_name_en,
-          license_number, leave_type, user_id
+          license_number, leave_type, user_id,
+          escort_name_ar, escort_name_en, relation_ar, relation_en,
+          admission_time, discharge_time, visit_type
         ) VALUES (
           ${leaveNumber}, ${filled.id_number}, ${filled.patient_name_ar},
           ${emptyToNull(filled.patient_name_en) ?? filled.patient_name_ar},
@@ -321,7 +361,9 @@ export async function POST(req: NextRequest) {
           ${doctorId}, ${docAr}, ${docEn},
           ${specAr}, ${specEn},
           ${hospitalId}, ${hospAr}, ${hospEn},
-          ${licenseNumber}, 'sick', ${userId}
+          ${licenseNumber}, ${formType}, ${userId},
+          ${escAr}, ${escEn}, ${relAr}, ${relEn},
+          ${admTime}, ${disTime}, ${visitType}
         )
         RETURNING id
       `;

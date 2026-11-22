@@ -95,6 +95,18 @@ CREATE INDEX IF NOT EXISTS idx_sick_leaves_identity ON sick_leaves(identity_numb
 CREATE INDEX IF NOT EXISTS idx_sick_leaves_name ON sick_leaves(name_ar);
 
 -- ============================================================
+--  أعمدة النماذج الأربعة (من المستودع المرجعي floseseh)
+--  تُضاف تلقائياً عند كل حفظ (ALTER ... IF NOT EXISTS آمن للتكرار)
+-- ============================================================
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS escort_name_ar VARCHAR(255);
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS escort_name_en VARCHAR(255);
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS relation_ar VARCHAR(255);
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS relation_en VARCHAR(255);
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS admission_time VARCHAR(50);
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS discharge_time VARCHAR(50);
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS visit_type VARCHAR(100);
+
+-- ============================================================
 --  مستخدم افتراضي للسجلات القادمة من صفحة الويب
 -- ============================================================
 INSERT INTO users (username, password, role, is_active)

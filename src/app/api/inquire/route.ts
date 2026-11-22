@@ -15,6 +15,55 @@ import { sql, isDemoMode, demoSearchLeave } from "@/lib/db";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/** تحويل سجل قاعدة البيانات إلى الشكل المعياري للعميل (يشمل حقول النماذج الأربعة) */
+function mapRecord(r: any): any {
+  return {
+    id: r.id,
+    gslCode: r.gsl_code,
+    identityNumber: r.identity_number,
+    nameAr: r.name_ar,
+    nameEn: r.name_en,
+    dateFrom:
+      typeof r.date_from === "string"
+        ? r.date_from
+        : r.date_from?.toISOString().slice(0, 10),
+    dateTo:
+      typeof r.date_to === "string"
+        ? r.date_to
+        : r.date_to?.toISOString().slice(0, 10),
+    dayCount: r.day_count,
+    issueDate: r.issue_date
+      ? typeof r.issue_date === "string"
+        ? r.issue_date
+        : r.issue_date.toISOString().slice(0, 10)
+      : null,
+    timeFrom: r.time_from,
+    nationalityAr: r.nationality_ar,
+    nationalityEn: r.nationality_en,
+    employer: r.employer,
+    employerEn: r.employer_en,
+    doctorNameAr: r.doctor_name_ar,
+    doctorNameEn: r.doctor_name_en,
+    doctorSpecialtyAr: r.doctor_specialty_ar,
+    doctorSpecialtyEn: r.doctor_specialty_en,
+    hospitalNameAr: r.hospital_name_ar,
+    hospitalNameEn: r.hospital_name_en,
+    licenseNumber: r.license_number,
+    leaveType: r.leave_type,
+    escortNameAr: r.escort_name_ar,
+    escortNameEn: r.escort_name_en,
+    relationAr: r.relation_ar,
+    relationEn: r.relation_en,
+    admissionTime: r.admission_time,
+    dischargeTime: r.discharge_time,
+    visitType: r.visit_type,
+    createdAt:
+      typeof r.created_at === "string"
+        ? r.created_at
+        : r.created_at?.toISOString(),
+  };
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -27,31 +76,7 @@ export async function GET(req: NextRequest) {
     // Demo mode: search in-memory / Vercel Blob storage
     if (isDemoMode()) {
       const demoRows = await demoSearchLeave({ gsl, id, q, limit });
-      const formatted = demoRows.map((r) => ({
-        id: r.id,
-        gslCode: r.gsl_code,
-        identityNumber: r.identity_number,
-        nameAr: r.name_ar,
-        nameEn: r.name_en,
-        dateFrom: r.date_from,
-        dateTo: r.date_to,
-        dayCount: r.day_count,
-        issueDate: r.issue_date,
-        timeFrom: r.time_from,
-        nationalityAr: r.nationality_ar,
-        nationalityEn: r.nationality_en,
-        employer: r.employer,
-        employerEn: r.employer_en,
-        doctorNameAr: r.doctor_name_ar,
-        doctorNameEn: r.doctor_name_en,
-        doctorSpecialtyAr: r.doctor_specialty_ar,
-        doctorSpecialtyEn: r.doctor_specialty_en,
-        hospitalNameAr: r.hospital_name_ar,
-        hospitalNameEn: r.hospital_name_en,
-        licenseNumber: r.license_number,
-        leaveType: r.leave_type,
-        createdAt: r.created_at,
-      }));
+      const formatted = demoRows.map((r) => mapRecord(r));
       return NextResponse.json({ success: true, count: formatted.length, records: formatted });
     }
 
@@ -104,31 +129,7 @@ export async function GET(req: NextRequest) {
       if (msg.includes("missing_connection_string") || msg.includes("connect") || msg.includes("connection")) {
         try {
           const demoRows = await demoSearchLeave({ gsl, id, q, limit });
-          const formatted = demoRows.map((r) => ({
-            id: r.id,
-            gslCode: r.gsl_code,
-            identityNumber: r.identity_number,
-            nameAr: r.name_ar,
-            nameEn: r.name_en,
-            dateFrom: r.date_from,
-            dateTo: r.date_to,
-            dayCount: r.day_count,
-            issueDate: r.issue_date,
-            timeFrom: r.time_from,
-            nationalityAr: r.nationality_ar,
-            nationalityEn: r.nationality_en,
-            employer: r.employer,
-            employerEn: r.employer_en,
-            doctorNameAr: r.doctor_name_ar,
-            doctorNameEn: r.doctor_name_en,
-            doctorSpecialtyAr: r.doctor_specialty_ar,
-            doctorSpecialtyEn: r.doctor_specialty_en,
-            hospitalNameAr: r.hospital_name_ar,
-            hospitalNameEn: r.hospital_name_en,
-            licenseNumber: r.license_number,
-            leaveType: r.leave_type,
-            createdAt: r.created_at,
-          }));
+          const formatted = demoRows.map((r) => mapRecord(r));
           return NextResponse.json({ success: true, count: formatted.length, records: formatted });
         } catch (demoErr: any) {
           return NextResponse.json(
@@ -146,35 +147,7 @@ export async function GET(req: NextRequest) {
       throw dbErr;
     }
 
-    const formatted = rows.map((r) => ({
-      id: r.id,
-      gslCode: r.gsl_code,
-      identityNumber: r.identity_number,
-      nameAr: r.name_ar,
-      nameEn: r.name_en,
-      dateFrom: typeof r.date_from === "string" ? r.date_from : r.date_from?.toISOString().slice(0, 10),
-      dateTo: typeof r.date_to === "string" ? r.date_to : r.date_to?.toISOString().slice(0, 10),
-      dayCount: r.day_count,
-      issueDate: r.issue_date
-        ? typeof r.issue_date === "string"
-          ? r.issue_date
-          : r.issue_date.toISOString().slice(0, 10)
-        : null,
-      timeFrom: r.time_from,
-      nationalityAr: r.nationality_ar,
-      nationalityEn: r.nationality_en,
-      employer: r.employer,
-      employerEn: r.employer_en,
-      doctorNameAr: r.doctor_name_ar,
-      doctorNameEn: r.doctor_name_en,
-      doctorSpecialtyAr: r.doctor_specialty_ar,
-      doctorSpecialtyEn: r.doctor_specialty_en,
-      hospitalNameAr: r.hospital_name_ar,
-      hospitalNameEn: r.hospital_name_en,
-      licenseNumber: r.license_number,
-      leaveType: r.leave_type,
-      createdAt: typeof r.created_at === "string" ? r.created_at : r.created_at?.toISOString(),
-    }));
+    const formatted = rows.map((r) => mapRecord(r));
 
     return NextResponse.json({ success: true, count: formatted.length, records: formatted });
   } catch (err: any) {

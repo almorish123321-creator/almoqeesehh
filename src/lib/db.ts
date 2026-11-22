@@ -50,6 +50,14 @@ interface DemoRecord {
   hospital_name_en: string | null;
   license_number: string | null;
   leave_type: string;
+  // حقول النماذج الأربعة (من المستودع المرجعي) — اختيارية للتوافق مع السجلات القديمة
+  escort_name_ar?: string | null;
+  escort_name_en?: string | null;
+  relation_ar?: string | null;
+  relation_en?: string | null;
+  admission_time?: string | null;
+  discharge_time?: string | null;
+  visit_type?: string | null;
   created_at: string;
 }
 
@@ -304,6 +312,15 @@ CREATE TABLE IF NOT EXISTS sick_leaves (
 CREATE INDEX IF NOT EXISTS idx_sick_leaves_gsl ON sick_leaves(gsl_code);
 CREATE INDEX IF NOT EXISTS idx_sick_leaves_identity ON sick_leaves(identity_number);
 CREATE INDEX IF NOT EXISTS idx_sick_leaves_name ON sick_leaves(name_ar);
+
+-- أعمدة النماذج الأربعة (من المستودع المرجعي floseseh) — آمنة على قواعد البيانات القائمة
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS escort_name_ar VARCHAR(255);
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS escort_name_en VARCHAR(255);
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS relation_ar VARCHAR(255);
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS relation_en VARCHAR(255);
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS admission_time VARCHAR(50);
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS discharge_time VARCHAR(50);
+ALTER TABLE sick_leaves ADD COLUMN IF NOT EXISTS visit_type VARCHAR(100);
 `;
 
 /**
