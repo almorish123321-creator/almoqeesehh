@@ -3357,3 +3357,32 @@ Stage Summary
 - New test script: scripts/test-leaveid-consistency.mjs (reusable regression test)
 - Result: PDF, DB, and UI preview now all use the same leave_id; /inquiry
   finds the saved record using the code printed in the PDF.
+
+---
+Task ID: pdf-download-button-final
+Agent: main (Super Z)
+Task: زر تنزيل PDF منسّق + التحقق من صفحة الاستعلام + إصدار النسخ الأربعة
+
+Work Log:
+- أنشأت POST /api/download-native-pdf: يرندر نفس HTML قالب المستودع المرجعي
+  (794×1123، خطوط وشعارات وباركود مضمّنة) عبر puppeteer-core + @sparticuz/chromium
+  ويعيد الملف كمرفق PDF جاهز للتنزيل المباشر
+- زر جديد «تنزيل PDF منسّق» بجانب زر الإصدار (لون تركوازي #00A99D)
+- refactor: buildNativePayload() مشترك بين مسار الطباعة ومسار التنزيل
+- vercel.json: maxDuration 60s / 1769MB للدالة الجديدة
+- إصلاح نشر: outputFileTracingIncludes لملفات chromium .br (تُحمَّل fs وقت التشغيل
+  ففاتها تتبع Next.js — فشل أول نشر بـ "input directory does not exist")
+- تحسين جوال: iOS Safari يتجاهل download attr على blob — فتح التقرير في تبويب
+  جديد على الجوال + رسالة إقلاع بارد واضحة على 502/504
+- إصلاح صفحة الاستعلام: /inquiry?id=...&nin=... (رابط باركود التقرير) كانت
+  تتجاهل الباراميترات — الآن تملأ الحقول وتستعلم تلقائياً مثل منصة صحة
+- أصدقت النسخ الأربع محلياً وعلى الإنتاج (scripts/issue-all-reports.mjs):
+  sickleave/companion/companion_review/visit_review — حفظ في قاعدة البيانات
+  (سجلات 110-113) واستعلام ناجح لكل رمز
+- تحققت بصرياً من التقارير الأربعة (pdftoppm) — مطابقة للمستودع المرجعي،
+  وحتى "-- mins" في فترة الانتظار منقولة حرفياً من app.js المرجعي (سطر 2188)
+- تحققت من الاستعلام التلقائي بمتصفح حقيقي: فتح رابط الباركود الملأ الحقول
+  وأظهر النتيجة كاملة (الاسم/التواريخ/المدة/الطبيب)
+
+Commits: f8563af, 2aa771e, 4df51ca, ec76a5d — كلها منشورة على الإنتاج (Vercel success)
+Files: download/1-تقرير-إجازة-مرضية.pdf ... 4-تقرير-مراجعة-الزيارة.pdf
