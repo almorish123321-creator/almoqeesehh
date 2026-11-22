@@ -63,12 +63,11 @@ export default function InquiryPage() {
 
   // =============================================================
   // رابط باركود التقرير: /inquiry?id=GSL…&nin=رقم-الهوية —
-  // عند الفتح بهذا الشكل تُملأ الحقول ويُنفَّذ الاستعلام تلقائياً
-  // (نفس سلوك منصة صحة عند مسح الباركود المطبوع على التقرير)
+  // عند الفتح بهذا الشكل تُملأ الحقول مسبقاً فقط (تعبئة مسبقة).
+  // الاستعلام يدوي دائماً: لا يُنفَّذ أي استعلام تلقائياً عند فتح
+  // الصفحة — ينتظر المستخدم ثم يضغط زر (استعلام) بنفسه.
   // =============================================================
-  const autoRanRef = useRef(false);
   useEffect(() => {
-    if (autoRanRef.current) return;
     const params = new URLSearchParams(window.location.search);
     const code = (
       params.get("id") ||
@@ -83,31 +82,8 @@ export default function InquiryPage() {
       ""
     ).trim();
     if (!code || !nid) return;
-    autoRanRef.current = true;
     setServiceCode(code);
     setNationalId(nid);
-    (async () => {
-      try {
-        const response = await fetch("/api/inquiry", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ service_code: code, national_id: nid }),
-        });
-        const data = await response.json();
-        if (data.success) {
-          setResult(data.data);
-          setSubmitButtonVisible(false);
-          setInputsDisabled(true);
-        } else {
-          setErrorMessage(data.message || "خطأ في الاستعلام");
-          setErrorVisible(true);
-        }
-      } catch (err) {
-        console.error("QR auto-inquiry error:", err);
-        setErrorMessage("حدث خطأ أثناء الاتصال بالنظام، يرجى المحاولة لاحقًا.");
-        setErrorVisible(true);
-      }
-    })();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {

@@ -235,7 +235,11 @@ export default function Home() {
       });
       return;
     }
-    const result = parseBotMessage(pasteText, { ...EMPTY_FORM });
+    // مهم: الأساس هو بيانات النموذج الحالية (formData) وليس EMPTY_FORM —
+    // حتى لا يُعاد ضبط نوع النموذج المُختار (مشهد مراجعة / المرافق / ...) أو
+    // تُمسح الحقول المُعبّأة سابقاً عند كل تعبئة تلقائية. الحقول المطابقة
+    // في الرسالة فقط هي التي تُستبدل، والبقية (ومنها form_type) تبقى كما هي.
+    const result = parseBotMessage(pasteText, formData);
     setFormData(result.data);
     setPasteStats({ matched: result.matchedFields.length, total: result.totalFields });
     toast({
