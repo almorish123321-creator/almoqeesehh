@@ -23,6 +23,13 @@
  * وضع العرض (DEMO_MODE أو فشل الاتصال بقاعدة البيانات):
  *   - يبحث في Vercel Blob storage (دالتان demoSearchLeave من src/lib/db)
  *   - يطابق gsl_code و identity_number بحساسية حالة الأحرف
+ *
+ * توافق مع مستودع floseseh (server.js /api/inquiry):
+ *   - يقبل أسماء حقول متعددة: leaveId / service_code / id / serviceCode
+ *     و nationalId / national_id / nin / nid
+ *   - يوحّد الأرقام العربية-الهندية (٠-٩ ، ۰-۹) إلى أرقام لاتينية
+ *   - الرد يتضمن الشكلين معاً: data (لصفحة /inquiry) و report
+ *     (لصفحة /verify) — نفس حقول report في server.js
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -30,6 +37,29 @@ import { sql, isDemoMode, demoSearchLeave } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/**
+ * توحيد الأرقام العربية-الهندية إلى لاتينية — مطابق لدالة cleanDigits في
+ * server.js من مستودع floseseh:
+ *   replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d))
+ *   replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))
+ */
+export function normalizeDigits(s: string): string {
+  if (!s) return "";
+  return String(s)
+    .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+    .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)))
+    .trim();
+}
+
+/**
+ * توحيد رمز الخدمة: أرقام لاتينية + أحرف كبيرة + إزالة المسافات —
+ * مطابق لدالة cleanCode في server.js من مستودع floseseh.
+ */
+export function normalizeCode(s: string): string {
+  if (!s) return "";
+  return normalizeDigits(s).toUpperCase().replace(/\s+/g, "");
+}
 
 /**
  * Format a Date/string as DD-MM-YYYY (Gregorian, day-first) — exactly
@@ -52,7 +82,7 @@ function formatDate(date: string | Date | null | undefined): string {
  * النصوص العربية تُرسل كما هي، الأرقام كذلك. التواريخ بصيغة DD-MM-YYYY.
  */
 function formatRow(row: any) {
-  return {
+  const data = {
     name: row.name_ar ?? row.name ?? "",
     issue_date: formatDate(row.issue_date),
     date_from: formatDate(row.date_from),
@@ -61,13 +91,63 @@ function formatRow(row: any) {
     doctor_name: row.doctor_name_ar ?? row.doctorNameAr ?? "",
     doctor_specialty: row.doctor_specialty_ar ?? row.doctorSpecialtyAr ?? "",
   };
+
+  // كائن report — نفس حقول الرد في server.js من مستودع floseseh
+  // (/api/inquiry → { success, report: formatted }) — تستخدمه صفحة /verify
+  const report = {
+    id: row.gsl_code ?? "",
+    serviceCode: row.gsl_code ?? "",
+    nationalId: row.identity_number ?? "",
+    type: "sickleave",
+    name: data.name,
+    patientName: data.name,
+    companionName: row.escort_name_ar ?? "",
+    relation: row.relation_ar ?? "",
+    issueDate: data.issue_date,
+    startDate: data.date_from,
+    endDate: data.date_to,
+    duration: String(data.day_count ?? "1"),
+    doctorName: data.doctor_name,
+    jobTitle: data.doctor_specialty,
+    hospital: row.hospital_ar ?? row.hospital_name_ar ?? "",
+    // البيانات الخام بأسماء حقول server.js (patient_name_ar, admission_date,
+    // discharge_date, job_title_ar ...) — تستخدمها /verify كقيم احتياطية
+    data: {
+      patient_name_ar: row.name_ar ?? row.name ?? "",
+      patient_name_en: row.name_en ?? "",
+      national_id: row.identity_number ?? "",
+      issue_date: row.issue_date ?? "",
+      admission_date: row.date_from ?? "",
+      discharge_date: row.date_to ?? "",
+      duration: String(row.day_count ?? row.dayCount ?? "1"),
+      doctor_name_ar: row.doctor_name_ar ?? "",
+      doctor_name: row.doctor_name_en ?? "",
+      job_title_ar: row.doctor_specialty_ar ?? "",
+      position: row.doctor_specialty_en ?? "",
+      hospital_ar: row.hospital_ar ?? row.hospital_name_ar ?? "",
+    },
+  };
+
+  return { data, report };
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const service_code = String(body?.service_code ?? "").trim();
-    const national_id = String(body?.national_id ?? "").trim();
+
+    // أسماء الحقول البديلة — مطابق لـ server.js من مستودع floseseh:
+    //   leaveId || service_code || id || serviceCode
+    //   nationalId || national_id || nin || nid
+    const rawCode = String(
+      body?.leaveId ?? body?.service_code ?? body?.id ?? body?.serviceCode ?? "",
+    );
+    const rawNationalId = String(
+      body?.nationalId ?? body?.national_id ?? body?.nin ?? body?.nid ?? "",
+    );
+
+    // توحيد الأرقام والرمز — مطابق لـ cleanDigits/cleanCode في server.js
+    const service_code = normalizeCode(rawCode);
+    const national_id = normalizeDigits(rawNationalId);
 
     // تحقق أساسي من المدخلات — مطابق للأصل
     if (!service_code || !national_id) {
@@ -96,7 +176,8 @@ export async function POST(req: NextRequest) {
       );
 
       if (exact) {
-        return NextResponse.json({ success: true, data: formatRow(exact) });
+        const { data, report } = formatRow(exact);
+        return NextResponse.json({ success: true, data, report });
       }
       return NextResponse.json(
         { success: false, message: "خطأ في الاستعلام" },
@@ -152,7 +233,8 @@ export async function POST(req: NextRequest) {
             r.identity_number === national_id,
         );
         if (exact) {
-          return NextResponse.json({ success: true, data: formatRow(exact) });
+          const { data, report } = formatRow(exact);
+          return NextResponse.json({ success: true, data, report });
         }
         return NextResponse.json(
           { success: false, message: "خطأ في الاستعلام" },
@@ -163,7 +245,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (rows.length > 0) {
-      return NextResponse.json({ success: true, data: formatRow(rows[0]) });
+      const { data, report } = formatRow(rows[0]);
+      return NextResponse.json({ success: true, data, report });
     }
 
     return NextResponse.json(
