@@ -53,7 +53,10 @@ import {
   calculateDays,
   generateLeaveId,
 } from "@/lib/parser";
-import { generateNativeLeaveId } from "@/lib/native-report";
+import {
+  generateNativeLeaveId,
+  nativeLeaveIdHead,
+} from "@/lib/native-report";
 
 const SAMPLE_MESSAGE = `👤 اسم المريض (عربي): عبدالله محمد علي
 👤 اسم المريض (إنجليزي): Abdullah Mohammed Ali
@@ -139,6 +142,17 @@ export default function Home() {
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
   // نافذة التقرير المُصدر (HTML تنسيق المستودع) — blob URL للفتح مجدداً
   const [htmlBlobUrl, setHtmlBlobUrl] = useState<string | null>(null);
+  // معاينة التقرير داخل نفس الصفحة (بدون فتح تبويب/نافذة جديدة):
+  // html = HTML التقرير للعرض داخل iframe، pdfUrl = ملف PDF للعرض المباشر
+  const [issuePreview, setIssuePreview] = useState<{
+    open: boolean;
+    html: string;
+    pdfUrl?: string;
+  }>({ open: false, html: "" });
+  const previewFrameRef = useRef<HTMLIFrameElement>(null);
+  const previewWrapRef = useRef<HTMLDivElement>(null);
+  // مقياس عرض التقرير داخل المعاينة (التقرير 794px — يُصغَّر على الشاشات الأضيق)
+  const [frameScale, setFrameScale] = useState(1);
   // تنزيل PDF منسّق (Chromium خادمياً) — حالة الزر
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   // شعار المنشأة المرفوع (data URL base64) — يُرسل للـ PDF فقط ولا يُخزن في قاعدة البيانات
@@ -371,17 +385,7 @@ export default function Home() {
       formData.admission_date_gregorian && formData.discharge_date_gregorian
         ? calculateDays(formData.admission_date_gregorian, formData.discharge_date_gregorian)
         : 0;
-    // Pass hospital_type to the native generator so the prefix is GSL (public)
-    // or PSL (private). Defaults to "public" if the field is somehow unset.
-    const hospitalType: "public" | "private" =
-      formData.hospital_type === "private" ? "private" : "public";
     const issueDateVal = formData.issue_date || todayISO;
-    // توليد رمز الإجازة بنفس خوارزمية المستودع المرجعي
-    // (الشفر الأفين التسلسلي الزمني: GSL/PSL + YYMMDD + 5 أرقام مشفرة)
-    const leaveId =
-      formData.id_number && formData.admission_date_gregorian && formData.discharge_date_gregorian
-        ? generateNativeLeaveId(issueDateVal, hospitalType)
-        : "—";
     // فترة الانتظار لمشهد المراجعة (ساعات، الدقائق -- كالنموذج المرجعي)
     let waiting = "";
     if (isVisitReview && formData.admission_time && formData.discharge_time) {
@@ -397,12 +401,146 @@ export default function Home() {
       admissionDisp,
       dischargeDisp,
       days,
-      leaveId,
       waiting,
       issueDateVal,
       timeDisp: toTimeDisplay(formData.time),
     };
   }, [formData, isVisitReview, todayISO]);
+
+  // =============================================================
+  //  رمز الإجازة الثابت لجلسة الإصدار — عشوائي (crypto) يمنع التشابه
+  //  =============================================================
+  //  - يُولَّد مرة واحدة عندما تكتمل الحقول المطلوبة ويبقى ثابتاً أثناء
+  //    التعديل (لا يتغير مع كل ضغطة زر كما كان سابقاً).
+  //  - يُعاد توليده تلقائياً عند تغيير تاريخ الإصدار/نوع المنشأة/نوع
+  //    النموذج (لأن البادئة GSL/PSL+التاريخ تُشتق منهما) أو بعد تحميل
+  //    سجل آخر في النموذج، أو يدوياً بزر (توليد رمز آخر).
+  //  - قبل الإصدار يُفحص عدم التكرار: سجل الرموز الصادرة على هذا الجهاز
+  //    (localStorage) ثم قاعدة البيانات عبر /api/inquire — إن كان الرمز
+  //    مستخدماً يُعاد التوليد حتى يصبح حصرياً.
+  //  - بعد إصدار ناجح يبقى الرمز ثابتاً (للتعبئة/التنزيل المتطابق)،
+  //    ويجدد تلقائياً عند البدء بإجازة جديدة.
+  // =============================================================
+  const [leaveCode, setLeaveCode] = useState("");
+  const leaveCodeRef = useRef("");
+  const issuedSnapshotRef = useRef("");
+
+  const rollLeaveCode = useCallback(() => {
+    const code = generateNativeLeaveId(
+      formData.issue_date || todayISO,
+      formData.hospital_type === "private" ? "private" : "public",
+    );
+    leaveCodeRef.current = code;
+    setLeaveCode(code);
+    return code;
+  }, [formData.issue_date, formData.hospital_type, todayISO]);
+
+  // توليد أولي + إعادة توليد عند عدم مطابقة البادئة للتاريخ/النوع الحالي
+  useEffect(() => {
+    if (!formData.id_number || !formData.admission_date_gregorian || !formData.discharge_date_gregorian) return;
+    const wantedHead = nativeLeaveIdHead(
+      formData.issue_date || todayISO,
+      formData.hospital_type === "private" ? "private" : "public",
+    );
+    setLeaveCode((prev) => {
+      if (prev && prev.slice(0, 9) === wantedHead) return prev;
+      const code = generateNativeLeaveId(
+        formData.issue_date || todayISO,
+        formData.hospital_type === "private" ? "private" : "public",
+      );
+      leaveCodeRef.current = code;
+      return code;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    formData.id_number,
+    formData.admission_date_gregorian,
+    formData.discharge_date_gregorian,
+    formData.issue_date,
+    formData.hospital_type,
+    formType,
+  ]);
+
+  // سجل الرموز الصادرة محلياً — منع تكرار الرمز على هذا الجهاز
+  const ISSUED_CODES_KEY = "seha:issued-leave-ids";
+  const loadIssuedCodes = (): Set<string> => {
+    try {
+      const raw = localStorage.getItem(ISSUED_CODES_KEY);
+      return new Set<string>(raw ? (JSON.parse(raw) as string[]) : []);
+    } catch {
+      return new Set<string>();
+    }
+  };
+  const rememberIssuedCode = (code: string) => {
+    try {
+      const s = loadIssuedCodes();
+      s.add(code);
+      localStorage.setItem(ISSUED_CODES_KEY, JSON.stringify(Array.from(s).slice(-800)));
+    } catch {
+      /* التخزين غير متاح */
+    }
+  };
+
+  /**
+   * ضمان أن الرمز الحالي غير مستخدم: فحص السجل المحلي ثم قاعدة البيانات
+   * (عبر /api/inquire) وإعادة التوليد عند أي تطابق. يُستدعى قبل الإصدار.
+   */
+  const ensureUniqueLeaveCode = useCallback(async (): Promise<string> => {
+    const gen = () =>
+      generateNativeLeaveId(
+        formData.issue_date || todayISO,
+        formData.hospital_type === "private" ? "private" : "public",
+      );
+    let code = leaveCodeRef.current || gen();
+    const local = loadIssuedCodes();
+    let guard = 0;
+    while (local.has(code.toUpperCase()) && guard < 12) {
+      code = gen();
+      guard += 1;
+    }
+    // فحص قاعدة البيانات: الرمز يجب أن يكون جديداً تماماً (لم يُصدر من أي جهاز)
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const resp = await fetch(`/api/inquire?gsl=${encodeURIComponent(code)}&limit=5`);
+        const data = await resp.json().catch(() => null);
+        const recs: any[] = data?.records || [];
+        const clash = recs.some(
+          (r) => String(r.gslCode || "").toUpperCase() === code.toUpperCase(),
+        );
+        if (!clash) break;
+        code = gen();
+        guard += 1;
+        if (guard > 20) break;
+      }
+    } catch {
+      /* تعذر الفحص — العشوائية التشفيرية تكفي عملياً */
+    }
+    leaveCodeRef.current = code;
+    setLeaveCode(code);
+    return code;
+  }, [formData.issue_date, formData.hospital_type, todayISO]);
+
+  // بعد إصدار ناجح: تجمّد الرمز طالما لم تتغير بيانات الإجازة —
+  // وعند تعبئة إجازة جديدة يُولَّد رمز جديد مختلف تلقائياً
+  const formSnapshotKey = [
+    formData.id_number,
+    formData.admission_date_gregorian,
+    formData.discharge_date_gregorian,
+    formData.hospital_type,
+    formData.issue_date,
+    formType,
+  ].join("|");
+  useEffect(() => {
+    if (
+      issuedSnapshotRef.current &&
+      issuedSnapshotRef.current !== formSnapshotKey
+    ) {
+      issuedSnapshotRef.current = "";
+      rollLeaveCode();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formSnapshotKey]);
+
 
   // --- Combined action: print PDF + upload data ---
   const handlePrintAndUpload = async () => {
@@ -428,7 +566,7 @@ export default function Home() {
     // دون هذا، كل مسار يستدعي generateLeaveId() بشكل مستقل (مع
     // Math.random() + Date.now()) فيُنتج رمزاً مختلفاً، فيعرض PDF
     // رمزاً وتخزّن DB رمزاً آخر — فلا يجد /inquiry السجل أبداً.
-    const capturedLeaveId = computed.leaveId;
+    const capturedLeaveId = leaveCodeRef.current || rollLeaveCode();
 
     const pdfPromise = (async () => {
       try {
@@ -453,10 +591,11 @@ export default function Home() {
         const blob = await resp.blob();
         const url = URL.createObjectURL(blob);
         setPdfBlobUrl(url);
+        // عرض PDF داخل معاينة نفس الصفحة (بدون تبويب جديد)
         if (typeof window !== "undefined") {
-          window.open(url, "_blank");
+          setIssuePreview({ open: true, html: "", pdfUrl: url });
         }
-        return { ok: true, message: "تم توليد ملف PDF وفتحه للطباعة" };
+        return { ok: true, message: "تم توليد ملف PDF وعرضه في المعاينة" };
       } catch (e: any) {
         return { ok: false, message: e?.message || "فشل توليد PDF" };
       }
@@ -486,7 +625,7 @@ export default function Home() {
       upload: uploadRes.ok ? "success" : "error",
       pdfMessage: pdfRes.message,
       uploadMessage: uploadRes.message,
-      leaveId: uploadRes.leaveId || (pdfRes.ok ? computed.leaveId : undefined),
+      leaveId: uploadRes.leaveId || (pdfRes.ok ? leaveCodeRef.current : undefined),
       recordId: uploadRes.recordId,
     });
 
@@ -526,8 +665,8 @@ export default function Home() {
   //  بناء حِمل NativeReportInput من بيانات النموذج — مشترك بين
   //  الإصدار (نافذة الطباعة) وتنزيل PDF (Chromium خادمياً)
   // =============================================================
-  const buildNativePayload = () => {
-    const capturedLeaveId = computed.leaveId === "—" ? "" : computed.leaveId;
+  const buildNativePayload = (leaveIdOverride?: string) => {
+    const capturedLeaveId = leaveIdOverride ?? leaveCodeRef.current ?? "";
     return {
       type: formType,
       patient_name_ar: formData.patient_name_ar,
@@ -580,10 +719,14 @@ export default function Home() {
 
     setDownloadingPdf(true);
     try {
+      // التنزيل يستخدم الرمز الثابت الحالي كما هو — لضمان أن PDF
+      // المنزّل يطابق الرمز المطبوع في التقرير المُصدَر والمحفوظ في
+      // قاعدة البيانات (بدون إعادة توليد أو فحص تكرار هنا)
+      const dlCode = leaveCodeRef.current || rollLeaveCode();
       const resp = await fetch("/api/download-native-pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildNativePayload()),
+        body: JSON.stringify(buildNativePayload(dlCode)),
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
@@ -607,7 +750,7 @@ export default function Home() {
       // اسم الملف من ترويسة Content-Disposition أو رمز الإجازة المحسوب
       const cd = resp.headers.get("Content-Disposition") || "";
       const m = cd.match(/filename="?([^";]+)"?/);
-      const fileName = m?.[1] || `report-${computed.leaveId === "—" ? Date.now() : computed.leaveId}.pdf`;
+      const fileName = m?.[1] || `report-${dlCode}.pdf`;
       const url = URL.createObjectURL(blob);
       // متصفحات الجوال (iOS Safari وأندرويد القديم) تتجاهل خاصية download
       // على blob — نفتح الـ PDF في تبويب جديد حفظاً للمستخدم من فقدان
@@ -656,8 +799,8 @@ export default function Home() {
   //  إصدار التقرير — التنسيق الأصلي المطابق للمستودع المرجعي
   //  نفس قالب server.js /api/generate-native-pdf (794×1123 A4):
   //  الخادم يبني HTML التقرير كاملاً (خطوط + شعارات + باركود مضمّنة)
-  //  ويُفتح في نافذة جديدة تطبع تلقائياً — نفس محرك الرندر في
-  //  Puppeteer بالمستودع، فالناتج مطابق بصرياً 100%.
+  //  ويُعرض داخل معاينة بنفس الصفحة (iframe) — بدون فتح تبويب أو
+  //  صفحة أخرى؛ الطباعة من زر (طباعة) داخل المعاينة.
   //  الأنواع الأربعة: sickleave | companion | companion_review | visit_review
   // =============================================================
   const handleIssueNative = async () => {
@@ -670,24 +813,12 @@ export default function Home() {
       return;
     }
 
-    if (htmlBlobUrl) {
-      URL.revokeObjectURL(htmlBlobUrl);
-      setHtmlBlobUrl(null);
-    }
     setAction({ pdf: "loading", upload: "loading" });
 
-    // رمز الإجازة الموحد (تنسيق المستودع) — يُرسل للـ PDF وقاعدة البيانات معاً
-    const payload = buildNativePayload();
-    const capturedLeaveId = payload.leave_id as string;
-
-    // افتح النافذة فوراً قبل الانتظار — لتجاوز حاجب النوافذ المنبثقة
-    // (نفس أسلوب المستودع: النافذة تفتح ثم تُملأ بمحتوى التقرير)
-    let issueWindow: Window | null = null;
-    try {
-      issueWindow = window.open("", "_blank");
-    } catch {
-      issueWindow = null;
-    }
+    // رمز الإجازة الموحد — عشوائي فريد (crypto + فحص التكرار محلياً
+    // وفي قاعدة البيانات) يُرسل للـ PDF وقاعدة البيانات معاً
+    const capturedLeaveId = await ensureUniqueLeaveCode();
+    const payload = { ...buildNativePayload(capturedLeaveId), embed: true };
 
     const issuePromise = (async () => {
       try {
@@ -701,20 +832,19 @@ export default function Home() {
           throw new Error(err?.message || `HTTP ${resp.status}`);
         }
         const html = await resp.text();
+        // عرض التقرير داخل معاينة بنفس الصفحة — لا نافذة ولا تبويب جديد
+        if (htmlBlobUrl) {
+          URL.revokeObjectURL(htmlBlobUrl);
+        }
         const blob = new Blob([html], { type: "text/html;charset=utf-8" });
         const url = URL.createObjectURL(blob);
         setHtmlBlobUrl(url);
-        if (issueWindow && !issueWindow.closed) {
-          issueWindow.location.href = url;
-        } else {
-          window.open(url, "_blank");
-        }
+        setIssuePreview({ open: true, html, pdfUrl: undefined });
         return {
           ok: true,
-          message: "تم إصدار التقرير وفتح نافذة الطباعة — اختر (حفظ كـ PDF) أو اطبع.",
+          message: "تم إصدار التقرير وعرضه في معاينة بنفس الصفحة — اطعنه أو نزّل PDF من الأعلى.",
         };
       } catch (e: any) {
-        if (issueWindow && !issueWindow.closed) issueWindow.close();
         return { ok: false, message: e?.message || "فشل إصدار التقرير" };
       }
     })();
@@ -748,9 +878,13 @@ export default function Home() {
     });
 
     if (issueRes.ok && uploadRes.ok) {
+      // سجّل الرمز الصادر (منع تكراره مستقبلاً) وثبّته مع بيانات هذه
+      // الإجازة — وعند تعبئة إجازة جديدة يُولَّد رمز مختلف تلقائياً
+      rememberIssuedCode(capturedLeaveId);
+      issuedSnapshotRef.current = formSnapshotKey;
       toast({
         title: "تم الإصدار بنجاح",
-        description: "فُتحت نافذة طباعة التقرير وحُفظت البيانات في قاعدة البيانات.",
+        description: "عُرض التقرير في معاينة بنفس الصفحة وحُفظت البيانات في قاعدة البيانات.",
       });
     } else if (issueRes.ok) {
       toast({ title: "تم الإصدار، فشل الحفظ", description: uploadRes.message, variant: "destructive" });
@@ -766,9 +900,57 @@ export default function Home() {
   };
 
   const handleOpenReportAgain = () => {
-    if (htmlBlobUrl) {
-      window.open(htmlBlobUrl, "_blank");
+    setIssuePreview((prev) => ({ ...prev, open: true }));
+  };
+
+  // طباعة التقرير من داخل المعاينة — نفس نافذة طباعة المتصفح لكن
+  // بلا فتح تبويب جديد؛ تطبع صفحة التقرير 794×1123 فقط.
+  const handlePrintPreview = () => {
+    try {
+      const w = previewFrameRef.current?.contentWindow;
+      if (w) {
+        w.focus();
+        w.print();
+        return;
+      }
+      throw new Error("no frame");
+    } catch {
+      // احتياطي: إن منع المتصفح الطباعة من الإطار نعرض التقرير عبر
+      // blob URL في نافذة طباعة نظامية
+      if (htmlBlobUrl) {
+        const w = window.open(htmlBlobUrl, "_blank");
+        if (!w) {
+          toast({
+            title: "تعذّر فتح الطباعة",
+            description: "استخدم زر (تنزيل PDF منسّق) للحصول على الملف.",
+            variant: "destructive",
+          });
+        }
+      }
     }
+  };
+
+  // ملاءمة التقرير (794×1123) لأبعاد المعاينة — تصغير تلقائي على الجوال
+  useEffect(() => {
+    if (!issuePreview.open) return;
+    const el = previewWrapRef.current;
+    if (!el) return;
+    const update = () => {
+      const s = Math.min(
+        1,
+        el.clientWidth / 794,
+        Math.max(el.clientHeight, 240) / 1123,
+      );
+      setFrameScale(s > 0 && isFinite(s) ? s : 1);
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [issuePreview.open]);
+
+  const handleClosePreview = () => {
+    setIssuePreview((prev) => ({ ...prev, open: false, pdfUrl: undefined }));
   };
 
   // --- Inquiry ---
@@ -1168,7 +1350,19 @@ export default function Home() {
               </CardHeader>
               <CardContent className="pt-6 space-y-6">
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <SummaryTile label="رمز الإجازة" value={computed.leaveId} />
+                  <div className="relative">
+                    <SummaryTile label="رمز الإجازة" value={leaveCode || "—"} />
+                    {/* توليد رمز آخر — يمنع التشابه بين الإجازات والمشاهد الصادرة */}
+                    <button
+                      type="button"
+                      title="توليد رمز إجازة آخر (فريد)"
+                      onClick={() => rollLeaveCode()}
+                      disabled={isBusy}
+                      className="absolute top-1 left-1 w-6 h-6 rounded-md bg-slate-100 hover:bg-[#306db5]/15 text-slate-500 hover:text-[#306db5] flex items-center justify-center disabled:opacity-50"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                   {isVisitReview ? (
                     <>
                       <SummaryTile label="فترة الانتظار" value={computed.waiting || "—"} />
@@ -1333,7 +1527,7 @@ export default function Home() {
                   إصدار التقرير وحفظ البيانات
                 </CardTitle>
                 <CardDescription>
-                  إصدار التقرير بالتنسيق الأصلي للمستودع (نافذة طباعة — اختر حفظ كـ PDF) أو تنزيل ملف PDF منسّق مباشرة، مع حفظ البيانات في قاعدة البيانات.
+                  إصدار التقرير بالتنسيق الأصلي للمستودع — يُعرض في معاينة بنفس الصفحة (طباعة أو حفظ)، أو تنزيل ملف PDF منسّق مباشرة، مع حفظ البيانات في قاعدة البيانات.
                 </CardDescription>
               </CardHeader>
               <CardContent className="pt-6 space-y-4">
@@ -1437,7 +1631,7 @@ export default function Home() {
                   )}
                   {pdfBlobUrl && (
                     <Button variant="outline" asChild>
-                      <a href={pdfBlobUrl} download={`sick_leave_${computed.leaveId}.pdf`} target="_blank" rel="noreferrer">
+                      <a href={pdfBlobUrl} download={`sick_leave_${leaveCode || "report"}.pdf`} target="_blank" rel="noreferrer">
                         <ExternalLink className="w-4 h-4 ml-1" />
                         تنزيل PDF القديم
                       </a>
@@ -1533,7 +1727,7 @@ export default function Home() {
                       }
                     />
                   </div>
-                  <Button onClick={handleSearch} disabled={searching} className="bg-[#2c3e77] hover:bg-[#243559] h-10">
+                  <Button onClick={() => handleSearch()} disabled={searching} className="bg-[#2c3e77] hover:bg-[#243559] h-10">
                     {searching ? <Loader2 className="w-4 h-4 ml-2 animate-spin" /> : <Search className="w-4 h-4 ml-2" />}
                     بحث
                   </Button>
@@ -1544,7 +1738,7 @@ export default function Home() {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between text-xs text-slate-500">
                       <span>عدد النتائج: {records.length}</span>
-                      <Button variant="ghost" size="sm" onClick={handleSearch} disabled={searching}>
+                      <Button variant="ghost" size="sm" onClick={() => handleSearch()} disabled={searching}>
                         <RefreshCw className="w-3 h-3 ml-1" />
                         تحديث
                       </Button>
@@ -1589,6 +1783,90 @@ export default function Home() {
           </TabsContent>
         </Tabs>
       </main>
+
+      {/* ===== معاينة التقرير المُصدَر — داخل نفس الصفحة =====
+          بديل نافذة/تبويب الطباعة المنفصل: التقرير يُعرض هنا كاملاً
+          (794×1123) مع أزرار الطباعة والتنزيل، ويُصغَّر تلقائياً على
+          الشاشات الأضيق. */}
+      {issuePreview.open && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-2 sm:p-6"
+          onClick={handleClosePreview}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-[860px] flex flex-col max-h-[95vh] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b bg-slate-50 shrink-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <FileText className="w-5 h-5 text-[#2c3e77]" />
+                <span className="font-bold text-[#2c3e77]">معاينة التقرير المُصدَر</span>
+                {leaveCode && (
+                  <Badge className="bg-[#2c3e77] text-white font-mono" dir="ltr">
+                    {leaveCode}
+                  </Badge>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={handlePrintPreview}
+                  className="bg-[#306db5] hover:bg-[#285d9e] text-white"
+                >
+                  <Printer className="w-4 h-4 ml-1" />
+                  طباعة
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleDownloadPdf}
+                  disabled={downloadingPdf}
+                  className="bg-[#00A99D] hover:bg-[#089186] text-white"
+                >
+                  {downloadingPdf ? (
+                    <Loader2 className="w-4 h-4 ml-1 animate-spin" />
+                  ) : (
+                    <Download className="w-4 h-4 ml-1" />
+                  )}
+                  تنزيل PDF
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleClosePreview}>
+                  <XCircle className="w-4 h-4 ml-1" />
+                  إغلاق
+                </Button>
+              </div>
+            </div>
+            <div
+              ref={previewWrapRef}
+              className="flex-1 min-h-0 overflow-hidden bg-slate-100 flex justify-center"
+            >
+              <div
+                style={{
+                  width: 794,
+                  height: 1123,
+                  flexShrink: 0,
+                  transform: `scale(${frameScale})`,
+                  transformOrigin: "top center",
+                }}
+              >
+                {issuePreview.pdfUrl ? (
+                  <iframe
+                    src={issuePreview.pdfUrl}
+                    title="معاينة PDF"
+                    className="w-full h-full border-0"
+                  />
+                ) : (
+                  <iframe
+                    ref={previewFrameRef}
+                    srcDoc={issuePreview.html}
+                    title="معاينة التقرير"
+                    className="w-full h-full border-0 bg-white"
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <footer className="border-t bg-slate-50 mt-auto">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 text-center text-xs text-slate-500">

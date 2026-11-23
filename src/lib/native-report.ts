@@ -82,6 +82,11 @@ export interface NativeReportInput {
   leave_id?: string;
   /** شعار المنشأة المرفوع (data URL base64) — بديل شعار وزارة الصحة */
   hospital_logo?: string | null;
+  /**
+   * عرض داخل الصفحة (iframe معاينة): إزالة سكربت الطباعة التلقائية من
+   * HTML التقرير — الطباعة تصبح يدوية بزر (طباعة) في المعاينة.
+   */
+  embed?: boolean;
 }
 
 export interface NativeReportData {
@@ -256,17 +261,14 @@ export function formatDateLabel(dateStr: string): string {
 }
 
 // ============================================================
-// توليد رمز الإجازة — نفس خوارزمية المستودع (شفر التبديل الخطي الأفين)
+// توليد رمز الإجازة — عشوائي قوي يمنع التشابه بين الإجازات
 // ============================================================
 
 /**
- * رمز تسلسلي زمني محمي بخوارزمية التبديل الخطي الأفين — يضمن التفرد
- * الزمني مع منع التخمين المتسلسل (+1). منقول حرفياً من app.js 2117-2126.
- *
- *   GSL/PSL + سنتين + شهر + يوم + 5 أرقام مشفرة
- *   مثال: GSL25112201234
+ * بادئة رمز الإجازة: GSL/PSL + YYMMDD — تُستخدم للتحقق أن الرمز المعروض
+ * يطابق تاريخ الإصدار الحالي ونوع المنشأة قبل الإصدار.
  */
-export function generateNativeLeaveId(
+export function nativeLeaveIdHead(
   issueDate: string,
   hospitalType: "public" | "private" | "gov",
 ): string {
@@ -275,10 +277,39 @@ export function generateNativeLeaveId(
   const yy = dateObj.getFullYear().toString().slice(2);
   const mm = (dateObj.getMonth() + 1).toString().padStart(2, "0");
   const dd = dateObj.getDate().toString().padStart(2, "0");
-  const seqId = Math.floor(Date.now() / 1000) % 100000;
-  const obfuscatedId = (47313 * seqId + 15923) % 100000;
-  const rand5 = obfuscatedId.toString().padStart(5, "0");
-  return `${prefix}${yy}${mm}${dd}${rand5}`;
+  return `${prefix}${yy}${mm}${dd}`;
+}
+
+/**
+ * رمز الإجازة: GSL/PSL + سنتين + شهر + يوم + 5 أرقام عشوائية.
+ * مثال: GSL25112201234
+ *
+ * الأرقام الخمسة تُولَّد عشوائياً عبر crypto.getRandomValues (وليس من
+ * الوقت كما كان سابقاً) — فكان الرمزان الصادران في الثانية نفسها
+ * متطابقين. العشوائية التشفيرية تمنع التشابه تماماً بين إجازة وأخرى
+ * ومشهد وآخر، ويُضاف عليها فحص عدم التكرار على العميل (سجل الرموز
+ * الصادرة) وقبل الإصدار عبر /api/inquire للتأكد أن الرمز غير مستخدم.
+ */
+export function generateNativeLeaveId(
+  issueDate: string,
+  hospitalType: "public" | "private" | "gov",
+): string {
+  const head = nativeLeaveIdHead(issueDate, hospitalType);
+  let rand5 = "";
+  try {
+    const g = globalThis.crypto;
+    if (g && typeof g.getRandomValues === "function") {
+      const buf = new Uint32Array(1);
+      g.getRandomValues(buf);
+      rand5 = String(buf[0] % 100000).padStart(5, "0");
+    }
+  } catch {
+    /* fallthrough */
+  }
+  if (!/^\d{5}$/.test(rand5)) {
+    rand5 = String(Math.floor(Math.random() * 100000)).padStart(5, "0");
+  }
+  return `${head}${rand5}`;
 }
 
 // ============================================================

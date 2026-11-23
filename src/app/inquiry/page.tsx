@@ -30,6 +30,59 @@ interface InquiryResult {
   day_count: number | string;
   doctor_name: string;
   doctor_specialty: string;
+  // حقول موسّعة — تُعرض حسب نوع الملف (leave_type)
+  type?: string;
+  name_en?: string;
+  national_id?: string;
+  nationality?: string;
+  employer?: string;
+  hospital?: string;
+  escort_name?: string;
+  relation?: string;
+  admission_time?: string;
+  discharge_time?: string;
+  visit_type?: string;
+}
+
+/**
+ * تسميات الأنواع الأربعة — نفس النماذج من المستودع المرجعي.
+ * عرض بيانات الاستعلام يتغير حسب نوع الملف المُرفَع عند الإصدار.
+ */
+const TYPE_LABELS: Record<string, { ar: string; en: string; emoji: string }> = {
+  sickleave: { ar: "تقرير إجازة مرضية", en: "Sick Leave Report", emoji: "🩺" },
+  companion: { ar: "تقرير مرافقة مريض", en: "Patient Companion Report", emoji: "👥" },
+  companion_review: { ar: "مشهد مراجعة لمرافق", en: "Companion Attendance Certificate", emoji: "📋" },
+  visit_review: { ar: "مشهد مراجعة", en: "Statement of Visit", emoji: "🔍" },
+};
+
+/** صيغة 12 ساعة عربية — 07:25 → 07:25 صباحاً */
+function formatTime12Ar(timeStr: string): string {
+  if (!timeStr) return "";
+  const m = String(timeStr).match(/(\d{1,2}):(\d{2})/);
+  if (!m) return timeStr;
+  let h = parseInt(m[1], 10);
+  const mm = m[2];
+  if (isNaN(h)) return timeStr;
+  const period = h >= 12 ? "مساءً" : "صباحاً";
+  h = h % 12;
+  if (h === 0) h = 12;
+  return `${String(h).padStart(2, "0")}:${mm} ${period}`;
+}
+
+/** فترة الانتظار بالساعات لمشهد المراجعة (الساعات -- والدقائق كالنموذج المرجعي) */
+function computeWaitingHours(admTime: string, disTime: string): string {
+  try {
+    const toMin = (t: string) => {
+      const m = String(t).match(/(\d{1,2}):(\d{2})/);
+      if (!m) return 0;
+      return (parseInt(m[1], 10) || 0) * 60 + (parseInt(m[2], 10) || 0);
+    };
+    let diff = toMin(disTime) - toMin(admTime);
+    if (diff < 0) diff = 0;
+    return String(Math.floor(diff / 60)).padStart(2, "0");
+  } catch {
+    return "01";
+  }
 }
 
 export default function InquiryPage() {
@@ -45,6 +98,8 @@ export default function InquiryPage() {
 
   // Refs for menu toggle (mirror original `showSlidbar` behaviour)
   const navCollapseRef = useRef<HTMLDivElement>(null);
+  // منع تنفيذ الاستعلام التلقائي مرتين (React StrictMode يمرر الـ effect مرتين)
+  const autoRanRef = useRef(false);
 
   // Hide error message when user types in service_code (mirror original
   // `keydown` listener that hides the error)
@@ -62,12 +117,61 @@ export default function InquiryPage() {
   }, []);
 
   // =============================================================
+  // تنفيذ الاستعلام — يُستخدم من زر النموذج ومن الرابط التلقائي
+  // =============================================================
+  const runQuery = useCallback(
+    async (code: string, nid: string) => {
+      setErrorVisible(false);
+      setErrorMessage("");
+      setLoading(true);
+      setSubmitButtonVisible(false);
+
+      try {
+        const response = await fetch("/api/inquiry", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            service_code: code.trim(),
+            national_id: nid.trim(),
+          }),
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          setResult(data.data);
+          setSubmitButtonVisible(false);
+          setInputsDisabled(true);
+        } else {
+          setResult(null);
+          setErrorMessage(data.message || "خطأ في الاستعلام");
+          setErrorVisible(true);
+          setInputsDisabled(false);
+        }
+      } catch (err) {
+        console.error("Error:", err);
+        setResult(null);
+        setErrorMessage("حدث خطأ أثناء الاتصال بالنظام، يرجى المحاولة لاحقًا.");
+        setErrorVisible(true);
+        setInputsDisabled(false);
+      } finally {
+        setLoading(false);
+        setSubmitButtonVisible(true);
+      }
+    },
+    [],
+  );
+
+  // =============================================================
   // رابط باركود التقرير: /inquiry?id=GSL…&nin=رقم-الهوية —
-  // عند الفتح بهذا الشكل تُملأ الحقول مسبقاً فقط (تعبئة مسبقة).
-  // الاستعلام يدوي دائماً: لا يُنفَّذ أي استعلام تلقائياً عند فتح
-  // الصفحة — ينتظر المستخدم ثم يضغط زر (استعلام) بنفسه.
+  // عند الفتح بهذا الشكل تُملأ الحقول مسبقاً ثم يُنفَّذ الاستعلام
+  // تلقائياً فوراً — بلا نسخ أو لصق من المستخدم. أما من فتح الصفحة
+  // مباشرة (بدون بارامترات) فالاستعلام يدوي: يعبّئ الرمز والهوية
+  // ثم يضغط زر (استعلام) بنفسه.
   // =============================================================
   useEffect(() => {
+    if (autoRanRef.current) return;
+    autoRanRef.current = true;
     const params = new URLSearchParams(window.location.search);
     const code = (
       params.get("id") ||
@@ -84,7 +188,9 @@ export default function InquiryPage() {
     if (!code || !nid) return;
     setServiceCode(code);
     setNationalId(nid);
-  }, []);
+    // استعلام تلقائي فوري — الرابط قادم من باركود/رابط التقرير
+    runQuery(code, nid);
+  }, [runQuery]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -96,39 +202,7 @@ export default function InquiryPage() {
       return;
     }
 
-    setErrorVisible(false);
-    setErrorMessage("");
-    setLoading(true);
-    setSubmitButtonVisible(false);
-
-    try {
-      const response = await fetch("/api/inquiry", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          service_code: serviceCode.trim(),
-          national_id: nationalId.trim(),
-        }),
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        setResult(data.data);
-        setSubmitButtonVisible(false);
-        setInputsDisabled(true);
-      } else {
-        setErrorMessage(data.message || "خطأ في الاستعلام");
-        setErrorVisible(true);
-      }
-    } catch (err) {
-      console.error("Error:", err);
-      setErrorMessage("حدث خطأ أثناء الاتصال بالنظام، يرجى المحاولة لاحقًا.");
-      setErrorVisible(true);
-    } finally {
-      setLoading(false);
-      setSubmitButtonVisible(true);
-    }
+    await runQuery(serviceCode, nationalId);
   };
 
   // Trigger Bootstrap-style menu toggle (mirror `showSlidbar()`)
@@ -330,27 +404,89 @@ export default function InquiryPage() {
 
               {result && (
                 <div id="results-section" className="results-inquiery row" style={{ display: "flex" }}>
-                  <div className="col-md-6">
-                    <span>الاسم: </span> <span>{result.name}</span>
+                  {/* شارة نوع الملف — البيانات المعروضة حسب نوع التقرير المُصدَر */}
+                  <div className="col-md-12" style={{ marginBottom: "10px" }}>
+                    <span
+                      dir="rtl"
+                      style={{
+                        display: "inline-block",
+                        padding: "6px 14px",
+                        borderRadius: "8px",
+                        background: "#e8f1fb",
+                        color: "#306db5",
+                        fontWeight: "bold",
+                        fontSize: "14px",
+                        border: "1px solid #bcd4ee",
+                      }}
+                    >
+                      {TYPE_LABELS[result.type || "sickleave"]?.emoji}{" "}
+                      {TYPE_LABELS[result.type || "sickleave"]?.ar || "تقرير إجازة مرضية"}
+                    </span>
                   </div>
-                  <div className="col-md-6">
-                    <span>تاريخ إصدار تقرير الإجازة:</span> <span>{result.issue_date}</span>
-                  </div>
-                  <div className="col-md-6">
-                    <span>تبدأ من:</span> <span>{result.date_from}</span>
-                  </div>
-                  <div className="col-md-6">
-                    <span>وحتى:</span> <span>{result.date_to}</span>
-                  </div>
-                  <div className="col-md-6">
-                    <span>المدة بالأيام:</span> <span>{result.day_count}</span>
-                  </div>
-                  <div className="col-md-6">
-                    <span>اسم الطبيب:</span> <span>{result.doctor_name}</span>
-                  </div>
-                  <div className="col-md-6">
-                    <span>المسمى الوظيفي:</span> <span>{result.doctor_specialty}</span>
-                  </div>
+                  {(
+                    (() => {
+                      const isCompanionType =
+                        result.type === "companion" || result.type === "companion_review";
+                      // الاسم حسب النوع: المرافق هو صاحب التقرير في أنواع المرافقة
+                      const rows: { label: string; value: string }[] = [
+                        {
+                          label: isCompanionType ? "اسم المرافق:" : "الاسم:",
+                          value: isCompanionType ? result.escort_name || "" : result.name,
+                        },
+                        {
+                          label: result.type === "sickleave" ? "تاريخ إصدار تقرير الإجازة:" : "تاريخ إصدار التقرير:",
+                          value: result.issue_date,
+                        },
+                        {
+                          label: result.type === "sickleave" ? "تبدأ من:" : "تاريخ الدخول:",
+                          value: result.date_from,
+                        },
+                        {
+                          label: result.type === "sickleave" ? "وحتى:" : "تاريخ الخروج:",
+                          value: result.date_to,
+                        },
+                        {
+                          label: "المدة بالأيام:",
+                          value: String(result.day_count ?? ""),
+                        },
+                        {
+                          label: "اسم الطبيب:",
+                          value: result.doctor_name,
+                        },
+                        {
+                          label: "المسمى الوظيفي:",
+                          value: result.doctor_specialty,
+                        },
+                        { label: "المنشأة الصحية:", value: result.hospital || "" },
+                        { label: "الجنسية:", value: result.nationality || "" },
+                        { label: "جهة العمل:", value: result.employer || "" },
+                      ];
+                      // بيانات إضافية حسب نوع الملف
+                      if (isCompanionType) {
+                        rows.push({ label: "اسم المريض:", value: result.name || "" });
+                        rows.push({ label: "صلة القرابة:", value: result.relation || "" });
+                      }
+                      if (result.type === "visit_review") {
+                        rows.push({ label: "وقت الدخول:", value: formatTime12Ar(result.admission_time || "") });
+                        rows.push({ label: "وقت الخروج:", value: formatTime12Ar(result.discharge_time || "") });
+                        rows.push({
+                          label: "فترة الانتظار:",
+                          value:
+                            result.admission_time && result.discharge_time
+                              ? `${computeWaitingHours(result.admission_time, result.discharge_time)} ساعة و -- دقيقة`
+                              : "",
+                        });
+                        rows.push({ label: "نوع الزيارة:", value: result.visit_type || "" });
+                      }
+                      return rows;
+                    })()
+                  )
+                    .filter((row) => row.value !== "" && row.value !== undefined)
+                    .map((row, i) => (
+                      <div className="col-md-6" key={i}>
+                        <span>{row.label}</span> <span>{row.value}</span>
+                      </div>
+                    ))}
                   <div className="col-md-12 text-center mt-3">
                     <button type="button" className="btn btn-primary" onClick={resetForm}>
                       استعلام جديد

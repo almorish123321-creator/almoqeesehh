@@ -73,10 +73,18 @@ export async function POST(req: NextRequest) {
     }
 
     // بناء HTML التقرير خادمياً (نفس تدفق server.js: بيانات ← أصول ← قالب)
-    const { html } = await buildServerNativeReport(
+    const { html: rawHtml } = await buildServerNativeReport(
       { ...body, leave_id: leaveId },
       { baseUrl, qrTarget, qrDataUrl },
     );
+
+    // وضع العرض داخل الصفحة (embed): نزيل سكربت الطباعة التلقائية حتى
+    // لا تُفتح نافذة الطباعة فور تضمين التقرير في معاينة نفس الصفحة —
+    // المستخدم يطبع يدوياً بزر (طباعة) في المعاينة.
+    const html =
+      body.embed === true
+        ? rawHtml.replace(/<script>[\s\S]*?<\/script>\s*<\/body>/, "</body>")
+        : rawHtml;
 
     return new NextResponse(html, {
       status: 200,

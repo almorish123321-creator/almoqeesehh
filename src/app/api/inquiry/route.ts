@@ -80,8 +80,16 @@ function formatDate(date: string | Date | null | undefined): string {
  * by the inquiry page (camelCase fields used by the React page).
  *
  * النصوص العربية تُرسل كما هي، الأرقام كذلك. التواريخ بصيغة DD-MM-YYYY.
+ *
+ * البيانات تُرجَع حسب نوع الملف المحفوظ (leave_type):
+ *   sickleave        → تقرير إجازة مرضية (حقول قياسية)
+ *   companion        → تقرير مرافقة مريض (+ اسم المرافق وصلة القرابة)
+ *   companion_review → مشهد مراجعة لمرافق (+ اسم المرافق وصلة القرابة)
+ *   visit_review     → مشهد مراجعة (+ وقتا الدخول والخروج ونوع الزيارة)
  */
 function formatRow(row: any) {
+  const leaveType = String(row.leave_type || "sickleave");
+
   const data = {
     name: row.name_ar ?? row.name ?? "",
     issue_date: formatDate(row.issue_date),
@@ -90,6 +98,18 @@ function formatRow(row: any) {
     day_count: row.day_count ?? row.dayCount ?? 0,
     doctor_name: row.doctor_name_ar ?? row.doctorNameAr ?? "",
     doctor_specialty: row.doctor_specialty_ar ?? row.doctorSpecialtyAr ?? "",
+    // حقول موسّعة — تعرضها صفحة الاستعلام حسب نوع الملف
+    type: leaveType,
+    name_en: row.name_en ?? "",
+    national_id: row.identity_number ?? "",
+    nationality: row.nationality_ar ?? "",
+    employer: row.employer ?? "",
+    hospital: row.hospital_ar ?? row.hospital_name_ar ?? "",
+    escort_name: row.escort_name_ar ?? "",
+    relation: row.relation_ar ?? "",
+    admission_time: row.admission_time ?? "",
+    discharge_time: row.discharge_time ?? "",
+    visit_type: row.visit_type ?? "",
   };
 
   // كائن report — نفس حقول الرد في server.js من مستودع floseseh
@@ -98,7 +118,7 @@ function formatRow(row: any) {
     id: row.gsl_code ?? "",
     serviceCode: row.gsl_code ?? "",
     nationalId: row.identity_number ?? "",
-    type: "sickleave",
+    type: leaveType,
     name: data.name,
     patientName: data.name,
     companionName: row.escort_name_ar ?? "",
