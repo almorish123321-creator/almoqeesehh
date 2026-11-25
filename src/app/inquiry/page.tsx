@@ -44,17 +44,6 @@ interface InquiryResult {
   visit_type?: string;
 }
 
-/**
- * تسميات الأنواع الأربعة — نفس النماذج من المستودع المرجعي.
- * عرض بيانات الاستعلام يتغير حسب نوع الملف المُرفَع عند الإصدار.
- */
-const TYPE_LABELS: Record<string, { ar: string; en: string; emoji: string }> = {
-  sickleave: { ar: "تقرير إجازة مرضية", en: "Sick Leave Report", emoji: "🩺" },
-  companion: { ar: "تقرير مرافقة مريض", en: "Patient Companion Report", emoji: "👥" },
-  companion_review: { ar: "مشهد مراجعة لمرافق", en: "Companion Attendance Certificate", emoji: "📋" },
-  visit_review: { ar: "مشهد مراجعة", en: "Statement of Visit", emoji: "🔍" },
-};
-
 /** صيغة 12 ساعة عربية — 07:25 → 07:25 صباحاً */
 function formatTime12Ar(timeStr: string): string {
   if (!timeStr) return "";
@@ -98,8 +87,6 @@ export default function InquiryPage() {
 
   // Refs for menu toggle (mirror original `showSlidbar` behaviour)
   const navCollapseRef = useRef<HTMLDivElement>(null);
-  // منع تنفيذ الاستعلام التلقائي مرتين (React StrictMode يمرر الـ effect مرتين)
-  const autoRanRef = useRef(false);
 
   // Hide error message when user types in service_code (mirror original
   // `keydown` listener that hides the error)
@@ -163,34 +150,11 @@ export default function InquiryPage() {
   );
 
   // =============================================================
-  // رابط باركود التقرير: /inquiry?id=GSL…&nin=رقم-الهوية —
-  // عند الفتح بهذا الشكل تُملأ الحقول مسبقاً ثم يُنفَّذ الاستعلام
-  // تلقائياً فوراً — بلا نسخ أو لصق من المستخدم. أما من فتح الصفحة
-  // مباشرة (بدون بارامترات) فالاستعلام يدوي: يعبّئ الرمز والهوية
-  // ثم يضغط زر (استعلام) بنفسه.
+  // الاستعلام يدوي دائماً — حتى عند القدوم من رابط باركود التقرير
+  // (/inquiry?id=…&nin=…): لا تُقرأ بارامترات الرابط ولا تُملأ الحقول
+  // تلقائياً ولا يُنفَّذ أي استعلام تلقائي. المستخدم يكتب رمز الخدمة
+  // ورقم الهوية بنفسه ثم يضغط زر (استعلام).
   // =============================================================
-  useEffect(() => {
-    if (autoRanRef.current) return;
-    autoRanRef.current = true;
-    const params = new URLSearchParams(window.location.search);
-    const code = (
-      params.get("id") ||
-      params.get("gsl") ||
-      params.get("service_code") ||
-      ""
-    ).trim();
-    const nid = (
-      params.get("nin") ||
-      params.get("national_id") ||
-      params.get("nid") ||
-      ""
-    ).trim();
-    if (!code || !nid) return;
-    setServiceCode(code);
-    setNationalId(nid);
-    // استعلام تلقائي فوري — الرابط قادم من باركود/رابط التقرير
-    runQuery(code, nid);
-  }, [runQuery]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -404,25 +368,6 @@ export default function InquiryPage() {
 
               {result && (
                 <div id="results-section" className="results-inquiery row" style={{ display: "flex" }}>
-                  {/* شارة نوع الملف — البيانات المعروضة حسب نوع التقرير المُصدَر */}
-                  <div className="col-md-12" style={{ marginBottom: "10px" }}>
-                    <span
-                      dir="rtl"
-                      style={{
-                        display: "inline-block",
-                        padding: "6px 14px",
-                        borderRadius: "8px",
-                        background: "#e8f1fb",
-                        color: "#306db5",
-                        fontWeight: "bold",
-                        fontSize: "14px",
-                        border: "1px solid #bcd4ee",
-                      }}
-                    >
-                      {TYPE_LABELS[result.type || "sickleave"]?.emoji}{" "}
-                      {TYPE_LABELS[result.type || "sickleave"]?.ar || "تقرير إجازة مرضية"}
-                    </span>
-                  </div>
                   {(
                     (() => {
                       const isCompanionType =

@@ -733,9 +733,12 @@ ${tableRows}
     <!-- Top Footer Row: QR/Text | Divider | MOH/Hospital -->
     <div style="display:flex; justify-content:center; align-items:flex-start; min-height:155px; position:relative;">
 
-      <!-- Left: QR Code + Text (QR margin-top: 8px, margin-bottom: 20px -> text starts at 100px) -->
+      <!-- Left: QR Code + Text (QR margin-top: 8px, margin-bottom: 20px -> text starts at 100px)
+           عند إلغاء الباركود (include_qr=false) يُرسم مربّع شفاف بنفس الأبعاد
+           والهوامش (72×72) — يختفي الباركود فقط ويبقى النص أسفله في مكانه
+           بالضبط دون أي تغيير في تنسيق الملف. -->
       <div style="width:340px; display:flex; flex-direction:column; align-items:center; padding-right:15px;">
-        ${includeQR ? (qrDataUrl ? `<img src="${qrDataUrl}" style="width:72px;height:72px;margin-top:8px;margin-bottom:20px;">` : `<img src="https://api.qrserver.com/v1/create-qr-code/?size=72x72&data=${encodeURIComponent(assets.inquiryUrl)}" style="width:72px;height:72px;margin-top:8px;margin-bottom:20px;">`) : ""}
+        ${includeQR ? (qrDataUrl ? `<img src="${qrDataUrl}" style="width:72px;height:72px;margin-top:8px;margin-bottom:20px;">` : `<img src="https://api.qrserver.com/v1/create-qr-code/?size=72x72&data=${encodeURIComponent(assets.inquiryUrl)}" style="width:72px;height:72px;margin-top:8px;margin-bottom:20px;">`) : `<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" style="width:72px;height:72px;margin-top:8px;margin-bottom:20px;">`}
         <p style="font-size:10px;font-weight:bold;font-family:'Noto Sans Arabic','Tajawal',sans-serif;text-align:center;margin:0 0 4px 0;line-height:1.4;color:#000;">للتحقق من بيانات التقرير يرجى التأكد من زيارة موقع منصة صحة<br>الرسمي</p>
         <p style="font-size:8px;color:#000;text-align:center;margin:0 0 3px 0;font-weight:bold;font-family:'Tinos','Times New Roman',serif;">To check the report please visit Seha's offical website</p>
         <p style="font-size:9px;text-align:center;margin:0;"><a href="${assets.inquiryUrl}" style="color:#0000EE;text-decoration:underline;">www.seha.sa/#/inquiries/slenquiry</a></p>
